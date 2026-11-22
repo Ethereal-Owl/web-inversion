@@ -1,0 +1,57 @@
+name: Actualizar datos y publicar la web
+
+on:
+  schedule:
+    - cron: "30 5 * * 2-6"   # de martes a sábado a las 5:30 UTC (tras el cierre de cada sesión)
+  workflow_dispatch:          # botón "Run workflow" para actualizar a mano
+  push:
+    branches: [main]
+
+permissions:
+  contents: read
+  pages: write
+  id-token: write
+
+concurrency:
+  group: pages
+  cancel-in-progress: false
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    timeout-minutes: 240
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - run: pip install requests==2.32.3
+      - name: Recuperar caché de CUSIP
+        uses: actions/cache@v4
+        with:
+          path: .cache/cusip_map.json
+          key: cusip-${{ github.run_id }}
+          restore-keys: cusip-
+      - name: Comprobar el procesado
+        run: python tests/test_extract.py
+      - name: Descargar y procesar datos
+        env:
+          SEC_USER_AGENT: ${{ vars.SEC_USER_AGENT }}
+          OPENFIGI_API_KEY: ${{ secrets.OPENFIGI_API_KEY }}
+        run: python scripts/build_data.py ${{ vars.BUILD_ARGS }}
+      - name: Borrar ficheros grandes temporales
+        run: rm -f .cache/*.zip
+      - uses: actions/configure-pages@v5
+      - uses: actions/upload-pages-artifact@v3
+        with:
+          path: site
+
+  deploy:
+    needs: build
+    runs-on: ubuntu-latest
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    steps:
+      - id: deployment
+        uses: actions/deploy-pages@v4

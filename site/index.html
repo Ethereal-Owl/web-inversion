@@ -1,0 +1,33 @@
+<!doctype html>
+<html lang="es">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Análisis Fundamental</title>
+<meta name="description" content="Análisis fundamental gratuito: métricas, históricos, valor intrínseco, proyecciones y carteras de grandes inversores.">
+<link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Crect width='32' height='32' rx='7' fill='%232563eb'/%3E%3Cpath d='M7 22l6-7 5 4 7-9' stroke='white' stroke-width='3' fill='none' stroke-linecap='round' stroke-linejoin='round'/%3E%3C/svg%3E">
+<link rel="stylesheet" href="styles.css">
+</head>
+<body>
+<header class="top">
+  <a href="#/" class="brand"><span class="logo">▲</span> Análisis Fundamental</a>
+  <nav>
+    <a href="#/" data-nav="home">Inicio</a>
+    <a href="#/screener" data-nav="screener">Buscador</a>
+    <a href="#/inversores" data-nav="inversores">Grandes inversores</a>
+    <a href="#/ayuda" data-nav="ayuda">Glosario</a>
+  </nav>
+  <div class="search-wrap">
+    <input id="search" type="search" placeholder="Buscar acción: AAPL, Coca-Cola…" autocomplete="off" aria-label="Buscar acción">
+    <div id="suggest" class="suggest" hidden></div>
+  </div>
+</header>
+<main id="app"><div class="loading">Cargando…</div></main>
+<footer class="foot">
+  <p>Datos: SEC EDGAR (estados financieros y formularios 13F) y Yahoo Finance (precios). Las proyecciones y valoraciones son cálculos propios a partir de históricos y de supuestos que tú puedes cambiar, no estimaciones de analistas.</p>
+  <p>Esto no es asesoramiento financiero. Los datos pueden contener errores: compruébalos en los informes oficiales antes de invertir. <span id="updated"></span></p>
+</footer>
+<script src="vendor/chart.umd.min.js"></script>
+<script src="app.js"></script>
+</body>
+</html>
