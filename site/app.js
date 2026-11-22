@@ -98,7 +98,8 @@ const routes = [
   [/^#\/inversores$/, investors],
   [/^#\/inversor\/(\d+)$/, investor],
   [/^#\/screener$/, screener],
-  [/^#\/ayuda$/, glossary]
+  [/^#\/ayuda$/, glossary],
+  [/^#\/guia$/, guide]
 ];
 async function route() {
   destroyCharts();
@@ -563,6 +564,7 @@ function tabDCF(el, M, R) {
   el.innerHTML = `
   <div class="card">
     <h2>Valor intrínseco por descuento de flujos de caja ${help(DEF.dcf)}</h2>
+    <p class="info">¿No sabes qué poner? Lee la <a href="#/guia">guía paso a paso</a> (parte 2).</p>
     <p class="muted small">Proyectamos el flujo de caja libre 10 años con el crecimiento que indiques, le sumamos un valor terminal y lo descontamos a hoy. Los valores por defecto salen de los históricos de la empresa (crecimiento de ventas de los últimos 5 años, limitado entre 0 % y 15 %). <b>Cámbialos según tu criterio</b>: un DCF es tan bueno como sus supuestos. Todas las cifras en millones de ${esc(ccy)}.</p>
     <div class="form-grid">
       ${field('fcf0', 'Flujo de caja libre inicial (M)', def.fcf0 !== null ? s.fcf0 / 1e6 : null, 'any', '', 'Por defecto: FCF de los últimos 12 meses (o la media de 3 años si es negativo).')}
@@ -648,6 +650,7 @@ function tabProjection(el, M, R) {
   el.innerHTML = `
   <div class="card">
     <h2>Proyección de resultados y rentabilidad esperada</h2>
+    <p class="info">¿No sabes qué poner? Lee la <a href="#/guia">guía paso a paso</a> (parte 1).</p>
     <div class="info"><b>Importante:</b> estas no son estimaciones de analistas (esos datos son de pago). Es una <b>proyección propia</b> que parte de los históricos de la empresa. Los valores por defecto son: crecimiento de ventas de los últimos 5 años, margen neto medio de 3 años, variación media del nº de acciones, PER mediano de 10 años y payout medio. Ajústalos a lo que tú creas razonable.</div>
     <div class="form-grid">
       ${f('py', 'Años de inversión', s.years, '1')}
@@ -657,6 +660,7 @@ function tabProjection(el, M, R) {
       ${f('ppe', 'PER de salida', s.pe, '0.5', 'El PER al que crees que cotizará al final del periodo. Por defecto, la mediana de los últimos 10 años.')}
       ${f('ppo', 'Payout (%)', s.payout * 100, '1', DEF.payout)}
       ${f('ppx', `Precio de compra (${esc(ccy)})`, s.price, 'any')}
+      ${f('ptg', 'Rentabilidad anual que quieres (%)', s.target ?? 10, '0.5', 'La rentabilidad mínima que te exiges. Como referencia, el índice S&P 500 ha dado históricamente en torno a un 9-10 % anual.')}
     </div>
     <p><button class="btn ghost" id="preset">Volver a los valores por defecto</button></p>
     <div id="pout"></div>
@@ -680,18 +684,20 @@ function tabProjection(el, M, R) {
   const run = () => {
     destroyCharts();
     const v = id => parseFloat($('#' + id).value);
-    const p = { years: clamp(Math.round(v('py')) || 5, 1, 30), g: v('pg') / 100, nm: v('pnm') / 100, shg: v('psh') / 100, pe: v('ppe'), payout: v('ppo') / 100, price: v('ppx') };
+    const p = { years: clamp(Math.round(v('py')) || 5, 1, 30), g: v('pg') / 100, nm: v('pnm') / 100, shg: v('psh') / 100, pe: v('ppe'), payout: v('ppo') / 100, price: v('ppx'), target: v('ptg') };
     store.set(key, p);
     if (!isNum(L.revenue) || !isNum(L.shares)) { out.innerHTML = '<div class="note">Faltan las ventas o el número de acciones para proyectar.</div>'; return; }
     const base = project(p);
     const bear = project({ ...p, g: p.g * 0.5 - 0.01, nm: p.nm * 0.85, pe: p.pe * 0.75 });
     const bull = project({ ...p, g: p.g * 1.3 + 0.01, nm: p.nm * 1.1, pe: p.pe * 1.2 });
     const cls = v => isNum(v) ? (v >= 0.1 ? 'good' : v < 0.05 ? 'bad' : '') : '';
+    const maxBuy = isNum(p.target) && base.priceEnd + base.divs > 0 ? (base.priceEnd + base.divs) / Math.pow(1 + p.target / 100, p.years) : null;
     out.innerHTML = `
     <div class="result">
       <div class="box hl"><div class="muted small">Rentabilidad anual esperada (escenario base)</div><div class="v ${cls(base.cagr)}">${pct(base.cagr)}</div><div class="small muted">incluye dividendos (sin reinvertir)</div></div>
       <div class="box"><div class="muted small">Precio objetivo en ${p.years} años</div><div class="v">${money(base.priceEnd, ccy)}</div></div>
       <div class="box"><div class="muted small">Dividendos acumulados por acción</div><div class="v">${money(base.divs, ccy)}</div></div>
+      <div class="box"><div class="muted small">Precio máximo para ganar un ${fmt(p.target, 1)} % anual ${help('El precio al que tendrías que comprar hoy para obtener la rentabilidad que quieres, si se cumple el escenario base.')}</div><div class="v ${isNum(maxBuy) && isNum(p.price) ? (p.price <= maxBuy ? 'good' : 'bad') : ''}">${money(maxBuy, ccy)}</div><div class="small muted">${isNum(maxBuy) && isNum(p.price) ? (p.price <= maxBuy ? 'El precio actual está por debajo' : 'El precio actual está por encima') : ''}</div></div>
       <div class="box"><div class="muted small">BPA en ${p.years} años</div><div class="v">${money(base.rows[base.rows.length - 1].eps, ccy)}</div><div class="small muted">hoy ${money(L.eps, ccy)}</div></div>
     </div>
     <h3>Escenarios</h3>
@@ -882,6 +888,80 @@ function glossary() {
   <p><b>Precios:</b> Yahoo Finance, actualizados una vez al día.</p>
   <p><b>Grandes inversores:</b> formularios 13F de la SEC, que los gestores con más de 100 millones de dólares deben presentar cada trimestre.</p>
   <p><b>Proyecciones:</b> cálculos propios a partir de los históricos. No son estimaciones de consenso de analistas, que solo están disponibles en servicios de pago.</p></div>`;
+}
+
+
+// ---------------------------------------------------------------- guía
+function guide() {
+  app.innerHTML = `<h1>Cómo calcular la rentabilidad y el valor intrínseco</h1>
+  <p class="muted">Una guía para quien empieza. No hace falta saber hacer estimaciones: se trata de hacerse buenas preguntas y usar los datos del pasado como punto de partida, siendo prudente.</p>
+
+  <div class="card"><h2>La idea de fondo</h2>
+  <p>Una acción es un trozo de una empresa. A largo plazo, lo que ganas depende de tres cosas:</p>
+  <ol><li><b>Cuánto crecen los beneficios</b> de la empresa.</li><li><b>Cuánto paga el mercado por esos beneficios</b> al final (el PER): si compras caro y acaba cotizando más barato, pierdes rentabilidad aunque la empresa vaya bien.</li><li><b>Los dividendos</b> que cobras por el camino.</li></ol>
+  <p>La web tiene dos herramientas que responden a dos preguntas distintas:</p>
+  <ul><li><b>Proyección y rentabilidad</b>: «Si compro hoy a este precio, ¿qué rentabilidad anual puedo esperar?». Es la más intuitiva: <b>empieza por aquí</b>.</li>
+  <li><b>Valor intrínseco (DCF)</b>: «¿Cuánto vale hoy la empresa según el dinero que generará?». Sirve para contrastar el resultado anterior.</li></ul>
+  <p>La web ya rellena todo con valores por defecto sacados del histórico. Tu trabajo es <b>revisar si esos valores son razonables</b> y, si dudas, ser algo más prudente.</p></div>
+
+  <div class="card"><h2>Antes de nada: ¿es predecible la empresa?</h2>
+  <p>Abre la pestaña <b>Métricas</b> y mira los últimos 10 años:</p>
+  <ul><li>¿Las <b>ventas</b> crecen casi todos los años, o suben y bajan mucho?</li>
+  <li>¿El <b>margen operativo</b> y el <b>ROCE</b> son estables, o cambian mucho de un año a otro?</li>
+  <li>¿La <b>deuda neta / EBITDA</b> es baja (menos de 2-3x)?</li></ul>
+  <p>Si todo es estable, las proyecciones tendrán sentido. Si la empresa es muy cíclica (petroleras, mineras, constructoras de coches, navieras…), tiene pérdidas o es un banco o aseguradora, las proyecciones son poco fiables: úsalas con mucha cautela o no las uses.</p></div>
+
+  <div class="card"><h2>Parte 1. Proyección y rentabilidad, casilla a casilla</h2>
+  <dl class="gloss">
+  <dt>Años de inversión</dt><dd>Déjalo en 5. Más allá todo es más incierto.</dd>
+  <dt>Crecimiento anual de ventas</dt><dd>Por defecto, lo que creció en los últimos 5 años. Mira en <b>Resumen</b> el crecimiento a 5 y a 10 años. Usa el <b>menor</b> de los dos y, si la empresa es ya muy grande, réstale un poco. Referencias: empresa madura (Coca-Cola, Procter & Gamble) 3-6 %; empresa de calidad que aún crece (Visa, Microsoft) 8-12 %; más del 15 % durante 5 años lo consiguen muy pocas.</dd>
+  <dt>Margen neto</dt><dd>Por defecto, la media de los últimos 3 años. En <b>Métricas</b> comprueba que no sea un año excepcional. Si el margen de los 3 últimos años es mucho mayor que el de antes, usa un número intermedio.</dd>
+  <dt>Variación anual de acciones</dt><dd>Si la empresa recompra acciones, saldrá negativo (por ejemplo −2 %) y eso aumenta tu beneficio por acción. Si emite acciones, saldrá positivo. Suele bastar con el valor por defecto.</dd>
+  <dt>PER de salida (la casilla más importante)</dt><dd>Es a cuántas veces beneficios crees que cotizará la acción dentro de 5 años. Por defecto, la mediana de los últimos 10 años. Reglas prudentes: no pongas más que el PER actual ni más que la mediana histórica; empresa madura 12-18; buena empresa con crecimiento moderado 18-25; más de 25 solo para empresas excepcionales que sigan creciendo rápido. Si hoy cotiza a PER 40, asumir que seguirá a 40 es arriesgado.</dd>
+  <dt>Payout</dt><dd>Parte del beneficio que reparte como dividendo. Deja el valor por defecto.</dd>
+  <dt>Rentabilidad anual que quieres</dt><dd>Tu objetivo. Como referencia, el índice S&amp;P 500 ha dado en torno a un 9-10 % anual a largo plazo; si no esperas superarlo, comprar el índice es más sencillo. Un 10-12 % es un objetivo razonable.</dd></dl>
+  <h3>Cómo leer el resultado</h3>
+  <ul><li><b>Rentabilidad anual esperada</b>: lo que ganarías al año si se cumple el escenario base.</li>
+  <li><b>Precio máximo</b>: a qué precio tendrías que comprar para lograr tu rentabilidad objetivo. Si el precio actual está por encima, la acción está cara para tu objetivo: puedes esperar a que baje.</li>
+  <li><b>Escenarios</b>: mira sobre todo el <b>pesimista</b>. Una buena compra es la que en el escenario base te da tu objetivo y en el pesimista no te hace perder dinero.</li></ul></div>
+
+  <div class="card"><h2>Parte 2. Valor intrínseco (DCF), casilla a casilla</h2>
+  <dl class="gloss">
+  <dt>Flujo de caja libre inicial</dt><dd>El dinero que genera la empresa en un año después de invertir lo necesario. Por defecto, el de los últimos 12 meses. Si ese año fue anormalmente bueno o malo, pon la media de los 3 últimos años (la ves en Estados financieros → Flujo de caja libre).</dd>
+  <dt>Crecimiento años 1-5</dt><dd>Usa el mismo criterio que para las ventas en la Parte 1. Mejor quedarse corto.</dd>
+  <dt>Crecimiento años 6-10</dt><dd>Más bajo que el anterior: con el tiempo todas las empresas crecen menos. Una buena regla es la mitad del de los años 1-5.</dd>
+  <dt>Crecimiento a perpetuidad</dt><dd>Déjalo entre 2 % y 3 %. Nunca más del 3 %: ninguna empresa crece más que la economía para siempre.</dd>
+  <dt>Tasa de descuento</dt><dd>La rentabilidad que exiges. Pon el mismo número que tu objetivo de la Parte 1 (9-10 % para empresas grandes y estables, 11-12 % si son más pequeñas o arriesgadas). Cuanto más alta, más prudente es el resultado.</dd>
+  <dt>Deuda neta, acciones y precio</dt><dd>Vienen de los últimos informes; no hace falta tocarlos.</dd>
+  <dt>Restar remuneración en acciones</dt><dd>Ponlo en «Sí» en empresas tecnológicas, que pagan mucho a sus empleados con acciones. Es más realista.</dd></dl>
+  <h3>Cómo leer el resultado</h3>
+  <ul><li><b>Margen de seguridad</b>: cuánto más barato que su valor cotiza. Como tus estimaciones pueden fallar, busca un margen de al menos un 20-30 %.</li>
+  <li><b>Tabla de sensibilidad</b>: muestra el valor con otras tasas de descuento y crecimientos. Si la acción solo parece barata en la esquina más optimista, no lo es.</li>
+  <li><b>Crecimiento que descuenta el precio</b> (la herramienta más útil para principiantes): en vez de adivinar el futuro, te dice qué crecimiento anual necesita la empresa para justificar su precio. Compáralo con su crecimiento histórico. Si el precio exige un 15 % anual y la empresa ha crecido un 7 %, está cara. Si exige un 3 % y ha crecido un 8 %, puede estar barata.</li></ul></div>
+
+  <div class="card"><h2>Ejemplo completo (empresa inventada)</h2>
+  <p>Una empresa cotiza a <b>100 $</b>, gana <b>5 $ por acción</b> (PER 20). En <b>Métricas</b> ves que sus ventas crecieron un 9 % anual en 5 años y un 7 % en 10 años, su margen es estable y su PER mediano de 10 años es 22.</p>
+  <ol><li><b>Crecimiento de ventas</b>: el menor de 9 % y 7 % es 7 %; como ya es grande pongo <b>6 %</b>.</li>
+  <li><b>Margen neto</b>: estable, dejo el valor por defecto.</li>
+  <li><b>PER de salida</b>: el actual es 20 y el histórico 22; me quedo con el menor, <b>20</b>. Si quiero ser más prudente, 18.</li>
+  <li><b>Resultado</b>: el BPA pasa de 5 $ a unos 6,7 $ en 5 años (6 % anual). 6,7 × 20 = 134 $, más unos 12 $ de dividendos cobrados por el camino si reparte el 40 % del beneficio: en total unos 146 $ por cada 100 $ invertidos, cerca de un <b>8 % anual</b>.</li>
+  <li><b>Decisión</b>: si mi objetivo es un 10 %, el «precio máximo» me dirá unos 91 $. Hoy está por encima: la pongo en mi lista de seguimiento y espero a que baje.</li>
+  <li><b>Contraste con el DCF</b>: si el DCF inverso dice que el precio descuenta un 6 % de crecimiento y la empresa ha crecido un 7-9 %, el precio es razonable pero no una ganga. Coincide con la conclusión anterior.</li></ol></div>
+
+  <div class="card"><h2>Errores típicos</h2>
+  <ul><li>Usar el crecimiento de los mejores años como si fuera a repetirse siempre.</li>
+  <li>Poner un PER de salida alto «porque ahora cotiza así».</li>
+  <li>Fiarse de un único número. Un valor intrínseco no es un precio exacto, es un rango: mira la tabla de sensibilidad y los escenarios.</li>
+  <li>Usar el DCF en bancos, aseguradoras, empresas con pérdidas o muy cíclicas.</li>
+  <li>Olvidar comprobar los datos: si algo parece raro, revisa el informe oficial con el enlace «informes en la SEC».</li></ul></div>
+
+  <div class="card"><h2>Lista rápida antes de comprar</h2>
+  <ol><li>¿Es un negocio estable y lo entiendo? (Métricas: ventas, márgenes y ROCE de 10 años)</li>
+  <li>¿Tiene poca deuda? (deuda neta / EBITDA menor de 2-3x)</li>
+  <li>Con supuestos prudentes, ¿la rentabilidad esperada base supera mi objetivo?</li>
+  <li>¿El escenario pesimista evita pérdidas?</li>
+  <li>¿El crecimiento que descuenta el precio es menor que el que ha tenido la empresa?</li></ol>
+  <p class="muted small">Esta guía es educativa y no es asesoramiento financiero.</p></div>`;
 }
 
 // ---------------------------------------------------------------- arranque
