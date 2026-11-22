@@ -39,6 +39,24 @@ jobs:
           SEC_USER_AGENT: ${{ vars.SEC_USER_AGENT }}
           OPENFIGI_API_KEY: ${{ secrets.OPENFIGI_API_KEY }}
         run: python scripts/build_data.py ${{ vars.BUILD_ARGS }}
+      - name: Resumen de comprobación (para revisar los datos en el registro)
+        run: |
+          python - <<'PY'
+          import json, pathlib
+          for t in ["AAPL", "MSFT", "NVDA", "KO", "BRK.B", "ASML", "NVO"]:
+              p = pathlib.Path("site/data/c") / f"{t}.json"
+              if not p.exists():
+                  print(t, "SIN DATOS"); continue
+              d = json.loads(p.read_text())
+              a = d["annual"]
+              print(t, d["currency"], "años", d["years"][0], "->", d["years"][-1], "| ttmEnd", d.get("ttmEnd"),
+                    "| ventas", [round(x / 1e9, 1) if x else None for x in a.get("revenue", [])[-4:]],
+                    "| ttm ventas", round((d["ttm"].get("revenue") or 0) / 1e9, 1),
+                    "| ttm bº", round((d["ttm"].get("netIncome") or 0) / 1e9, 1),
+                    "| acciones", d.get("sharesOutstanding"), "| precio", (d.get("price") or {}).get("price"),
+                    "| inversores", len(d.get("holders", [])))
+          print(open("site/data/meta.json").read())
+          PY
       - name: Borrar ficheros grandes temporales
         run: rm -f .cache/*.zip
       - uses: actions/configure-pages@v5
