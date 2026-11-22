@@ -638,7 +638,6 @@ function tabProjection(el, M, R) {
   const peHist = median(R.pe.slice(-10));
   const def = {
     years: 5,
-    rev0: L.revenue,
     g: clamp(isNum(revC5) ? revC5 : 0.05, -0.05, 0.15),
     nm: clamp(avg(R.nm.slice(-3)) ?? div(L.ni, L.revenue) ?? 0.1, -0.5, 0.6),
     shg: clamp(isNum(shg) ? shg : 0, -0.05, 0.05),
@@ -655,7 +654,6 @@ function tabProjection(el, M, R) {
     <div class="info"><b>Importante:</b> estas no son estimaciones de analistas (esos datos son de pago). Es una <b>proyección propia</b> que parte de los históricos de la empresa. Los valores por defecto son: crecimiento de ventas de los últimos 5 años, margen neto medio de 3 años, variación media del nº de acciones, PER mediano de 10 años y payout medio. Ajústalos a lo que tú creas razonable.</div>
     <div class="form-grid">
       ${f('py', 'Años de inversión', s.years, '1')}
-      ${f('prv', `Ventas de partida (M ${esc(ccy)})`, isNum(s.rev0) ? s.rev0 / 1e6 : null, 'any', `Ventas de los últimos 12 meses según el último informe presentado a la SEC${L.date ? ' (hasta ' + L.date + ')' : ''}. Si la empresa ha publicado resultados más recientes que aún no están en la SEC, puedes ponerlos aquí.`)}
       ${f('pg', 'Crecimiento anual de ventas (%)', s.g * 100, '0.5')}
       ${f('pnm', 'Margen neto (%)', s.nm * 100, '0.5', DEF.nm)}
       ${f('psh', 'Variación anual de acciones (%)', s.shg * 100, '0.25', DEF.shg)}
@@ -670,7 +668,7 @@ function tabProjection(el, M, R) {
   const out = $('#pout');
   const project = (p) => {
     const rows = [];
-    let rev = p.rev0, sh = L.shares, divs = 0;
+    let rev = L.revenue, sh = L.shares, divs = 0;
     for (let t = 1; t <= p.years; t++) {
       rev *= 1 + p.g; sh *= 1 + p.shg;
       const ni = rev * p.nm, eps = ni / sh, dps = eps * p.payout;
@@ -686,9 +684,9 @@ function tabProjection(el, M, R) {
   const run = () => {
     destroyCharts();
     const v = id => parseFloat($('#' + id).value);
-    const p = { years: clamp(Math.round(v('py')) || 5, 1, 30), g: v('pg') / 100, nm: v('pnm') / 100, shg: v('psh') / 100, pe: v('ppe'), payout: v('ppo') / 100, price: v('ppx'), target: v('ptg'), rev0: v('prv') * 1e6 };
+    const p = { years: clamp(Math.round(v('py')) || 5, 1, 30), g: v('pg') / 100, nm: v('pnm') / 100, shg: v('psh') / 100, pe: v('ppe'), payout: v('ppo') / 100, price: v('ppx'), target: v('ptg') };
     store.set(key, p);
-    if (!isNum(p.rev0) || !isNum(L.shares)) { out.innerHTML = '<div class="note">Faltan las ventas o el número de acciones para proyectar.</div>'; return; }
+    if (!isNum(L.revenue) || !isNum(L.shares)) { out.innerHTML = '<div class="note">Faltan las ventas o el número de acciones para proyectar.</div>'; return; }
     const base = project(p);
     const bear = project({ ...p, g: p.g * 0.5 - 0.01, nm: p.nm * 0.85, pe: p.pe * 0.75 });
     const bull = project({ ...p, g: p.g * 1.3 + 0.01, nm: p.nm * 1.1, pe: p.pe * 1.2 });
