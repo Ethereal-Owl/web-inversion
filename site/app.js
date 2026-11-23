@@ -405,7 +405,7 @@ async function company(ticker, tab) {
   const M = buildModel(d), R = yearRatios(M), LR = ltmRatios(M);
   const { L, ccy } = M;
   tab = tab || 'resumen';
-  const TABS = [['resumen', 'Resumen'], ['finanzas', 'Estados financieros'], ['metricas', 'Métricas'], ['valoracion', 'Valor intrínseco (DCF)'], ['proyeccion', 'Proyección y rentabilidad'], ['inversores', 'Grandes inversores']];
+  const TABS = [['resumen', 'Resumen'], ['finanzas', 'Estados financieros'], ['metricas', 'Métricas'], ['valoracion', 'Valor intrínseco (DCF)'], ['proyeccion', 'Proyección y rentabilidad'], ['previsiones', 'Previsiones de analistas'], ['inversores', 'Grandes inversores']];
   const px = d.price;
   const chg1y = (() => { const h = (px && px.history) || []; if (h.length < 13) return null; return h[h.length - 1][1] / h[h.length - 13][1] - 1; })();
   const warn = [];
@@ -432,7 +432,7 @@ async function company(ticker, tab) {
   const renderTab = t => {
     destroyCharts();
     const el = $('#tab');
-    ({ resumen: tabSummary, finanzas: tabFinancials, metricas: tabMetrics, valoracion: tabDCF, proyeccion: tabProjection, inversores: tabHolders }[t] || tabSummary)(el, M, R, LR);
+    ({ resumen: tabSummary, finanzas: tabFinancials, metricas: tabMetrics, valoracion: tabDCF, proyeccion: tabProjection, previsiones: tabEstimates, inversores: tabHolders }[t] || tabSummary)(el, M, R, LR);
   };
   renderTab(tab);
 }
@@ -744,7 +744,7 @@ function tabProjection(el, M, R) {
   <div class="card">
     <h2>Proyección de resultados y rentabilidad esperada</h2>
     <p class="info">¿No sabes qué poner? Lee la <a href="#/guia">guía paso a paso</a> (parte 1).</p>
-    <div class="info"><b>Importante:</b> estas no son estimaciones de analistas (esos datos son de pago). Es una <b>proyección propia</b> que parte de los históricos de la empresa. Los valores por defecto son: crecimiento de ventas de los últimos 5 años, margen neto medio de 3 años, variación media del nº de acciones, PER mediano de 10 años y payout medio. Ajústalos a lo que tú creas razonable.</div>
+    <div class="info"><b>Importante:</b> esta es una <b>proyección propia</b>, no la de los analistas (esa está en la pestaña <a href="#/c/${esc(d.ticker)}/previsiones">Previsiones de analistas</a>, desde donde puedes copiarla aquí). Parte de los históricos de la empresa. Los valores por defecto son: crecimiento de ventas de los últimos 5 años, margen neto medio de 3 años, variación media del nº de acciones, PER mediano de 10 años y payout medio. Ajústalos a lo que tú creas razonable.</div>
     <div class="form-grid">
       ${f('py', 'Años de inversión', s.years, '1')}
       ${f('pg', 'Crecimiento anual de ventas (%)', s.g * 100, '0.5')}
@@ -834,6 +834,308 @@ function tabProjection(el, M, R) {
   }));
   $('#preset').addEventListener('click', () => { store.set(key, null); tabProjection(el, M, R); });
   run();
+}
+
+// ---------------------------------------------------------------- Previsiones de analistas
+// Los datos de consenso no se guardan en la web: cada usuario usa su propia clave gratuita y su navegador
+// los pide directamente al proveedor (uso personal, sin redistribuir datos de terceros).
+const EST_KEYS = 'est:keys';
+const EST_TTL = 24 * 3600 * 1000; // una consulta al día por empresa para no gastar el cupo gratuito
+const estKeys = () => store.get(EST_KEYS) || {};
+const numOf = v => (v === null || v === undefined || v === '' || v === 'None') ? null : (isNum(+v) ? +v : null);
+const pick = (x, names) => { for (const k of names) { const v = numOf(x[k]); if (v !== null) return v; } return null; };
+
+async function fetchJSON(url) {
+  let r;
+  try { r = await fetch(url); } catch (e) { throw new Error('No se pudo conectar con el proveedor (¿sin internet o algún bloqueador de anuncios?).'); }
+  let j = null;
+  try { j = await r.json(); } catch (e) { /* respuesta no JSON */ }
+  return { ok: r.ok, status: r.status, j };
+}
+
+// Financial Modeling Prep: ventas, EBITDA, EBIT, beneficio neto y BPA de varios años, con máximo, mínimo y nº de analistas.
+async function estFMP(ticker, key) {
+  const sym = ticker.replace(/\./g, '-');
+  const { ok, status, j } = await fetchJSON(`https://financialmodelingprep.com/stable/analyst-estimates?symbol=${encodeURIComponent(sym)}&period=annual&page=0&limit=10&apikey=${encodeURIComponent(key)}`);
+  const msg = j && !Array.isArray(j) ? (j['Error Message'] || j.message || j.error || JSON.stringify(j)) : null;
+  if (!ok || msg) {
+    if (status === 401 || /invalid api key/i.test(msg || '')) throw new Error('Financial Modeling Prep no acepta la clave. Revisa que la has copiado entera.');
+    if (status === 402 || /premium|subscription|upgrade|special endpoint/i.test(msg || '')) throw new Error('El plan gratuito de Financial Modeling Prep no incluye previsiones para esta empresa.');
+    if (status === 429 || /limit/i.test(msg || '')) throw new Error('Has agotado las consultas gratuitas de hoy en Financial Modeling Prep (250 al día). Vuelve a probar mañana.');
+    throw new Error('Financial Modeling Prep respondió con un error' + (status ? ' (' + status + ')' : '') + (msg ? ': ' + String(msg).slice(0, 160) : '.'));
+  }
+  if (!Array.isArray(j) || !j.length) return null;
+  const trio = (x, k, old, nKeys) => ({
+    avg: pick(x, [k + 'Avg', 'estimated' + old + 'Avg']), low: pick(x, [k + 'Low', 'estimated' + old + 'Low']),
+    high: pick(x, [k + 'High', 'estimated' + old + 'High']), n: pick(x, nKeys)
+  });
+  const nRev = ['numAnalystsRevenue', 'numberAnalystEstimatedRevenue'], nEps = ['numAnalystsEps', 'numberAnalystsEstimatedEps'];
+  return {
+    source: 'Financial Modeling Prep', full: true,
+    years: j.filter(x => x && x.date).map(x => ({
+      date: String(x.date).slice(0, 10),
+      revenue: trio(x, 'revenue', 'Revenue', nRev), ebitda: trio(x, 'ebitda', 'Ebitda', nRev), ebit: trio(x, 'ebit', 'Ebit', nRev),
+      ni: trio(x, 'netIncome', 'NetIncome', nEps), eps: trio(x, 'eps', 'Eps', nEps)
+    }))
+  };
+}
+
+// Alpha Vantage: solo ventas y BPA del ejercicio actual y el siguiente, pero con revisiones de los últimos 30 días.
+async function estAV(ticker, key) {
+  const sym = ticker.replace(/\./g, '-');
+  const { ok, status, j } = await fetchJSON(`https://www.alphavantage.co/query?function=EARNINGS_ESTIMATES&symbol=${encodeURIComponent(sym)}&apikey=${encodeURIComponent(key)}`);
+  const msg = j && (j['Error Message'] || j.Information || j.Note);
+  if (!ok || msg || !j) {
+    if (/rate limit|requests per day|25 requests/i.test(msg || '')) throw new Error('Has agotado las consultas gratuitas de hoy en Alpha Vantage (25 al día). Vuelve a probar mañana.');
+    if (/apikey|api key/i.test(msg || '')) throw new Error('Alpha Vantage no acepta la clave. Revisa que la has copiado entera.');
+    throw new Error('Alpha Vantage respondió con un error' + (status && !ok ? ' (' + status + ')' : '') + (msg ? ': ' + String(msg).slice(0, 160) : '.'));
+  }
+  const list = (j.estimates || j.annualEstimates || []).filter(x => /year/i.test(x.horizon || ''));
+  if (!list.length) return null;
+  const trio = (x, k) => ({ avg: pick(x, [k + '_estimate_average']), low: pick(x, [k + '_estimate_low']), high: pick(x, [k + '_estimate_high']), n: pick(x, [k + '_estimate_analyst_count']) });
+  const empty = { avg: null, low: null, high: null, n: null };
+  return {
+    source: 'Alpha Vantage', full: false,
+    years: list.filter(x => x.date).map(x => ({
+      date: String(x.date).slice(0, 10), revenue: trio(x, 'revenue'), eps: trio(x, 'eps'), ebitda: empty, ebit: empty, ni: empty,
+      eps90: pick(x, ['eps_estimate_average_90_days_ago', 'eps_estimate_average_90days_ago']),
+      up30: pick(x, ['eps_estimate_revision_up_trailing_30_days']), down30: pick(x, ['eps_estimate_revision_down_trailing_30_days'])
+    }))
+  };
+}
+
+// Prueba primero Financial Modeling Prep (más completo) y, si falla, Alpha Vantage. Guarda el resultado 24 horas.
+async function getEstimates(ticker, force) {
+  const ck = 'est:' + ticker, c = store.get(ck);
+  if (!force && c && Date.now() - c.t < EST_TTL) return c.data;
+  const K = estKeys(), errors = [];
+  let data = null;
+  for (const [k, fn] of [['fmp', estFMP], ['av', estAV]]) {
+    if (!K[k]) continue;
+    try { data = await fn(ticker, K[k]); if (data && data.years.length) break; data = null; }
+    catch (e) { errors.push(e.message); }
+  }
+  if (!data && errors.length) throw new Error(errors.join(' '));
+  if (data) { data.fetched = new Date().toISOString(); store.set(ck, { t: Date.now(), data }); }
+  return data;
+}
+
+// Dispersión = (máximo − mínimo) / media. Se convierte en nota 0-100 con los mismos tramos que el índice de predecibilidad.
+function spreadOf(e) { return e && isNum(e.avg) && isNum(e.low) && isNum(e.high) && e.avg !== 0 ? (e.high - e.low) / Math.abs(e.avg) : null; }
+function agreement(e, a, b) {
+  const s = spreadOf(e);
+  if (!isNum(s)) return { score: null, spread: null, n: e ? e.n : null };
+  let score = dispScore(s * 100, a, b);
+  if (isNum(e.n) && e.n <= 1) score = null; // con un solo analista no hay consenso
+  else if (isNum(e.n) && e.n < 4) score = Math.min(score, 55); // pocos analistas: como mucho «media»
+  return { score, spread: s, n: e.n };
+}
+const yearConsensus = y => {
+  const r = agreement(y.revenue, 8, 20), p = agreement(y.eps, 15, 40);
+  const parts = [[r.score, 0.4], [p.score, 0.6]].filter(([s]) => isNum(s));
+  const w = sum(parts.map(x => x[1]));
+  return { rev: r, eps: p, score: w ? sum(parts.map(([s, k]) => s * k)) / w : null };
+};
+
+function estKeyForm(K) {
+  return `<p>Para ver el consenso necesitas una <b>clave gratuita</b> de un proveedor de datos. Solo hay que hacerlo una vez:</p>
+  <ol>
+    <li>Crea una cuenta gratis en <a href="https://site.financialmodelingprep.com/register" target="_blank" rel="noopener">Financial Modeling Prep</a>. Al entrar, en el panel (<i>Dashboard</i>) verás tu <b>API key</b>: un código largo de letras y números. Cópialo.</li>
+    <li>Pégalo abajo y pulsa <b>Guardar</b>.</li>
+    <li><i>Opcional, como respaldo:</i> pide otra clave gratis en <a href="https://www.alphavantage.co/support/#api-key" target="_blank" rel="noopener">Alpha Vantage</a> (solo pide un email). Se usa si la primera falla; da menos datos (ventas y BPA de 2 años) y 25 consultas al día.</li>
+  </ol>
+  <div class="form-grid">
+    <label>Clave de Financial Modeling Prep<input id="kfmp" type="text" autocomplete="off" spellcheck="false" value="${esc(K.fmp || '')}" placeholder="p. ej. a1b2c3d4…"></label>
+    <label>Clave de Alpha Vantage (opcional)<input id="kav" type="text" autocomplete="off" spellcheck="false" value="${esc(K.av || '')}" placeholder="p. ej. ABCD1234…"></label>
+  </div>
+  <p style="display:flex;gap:.5rem;flex-wrap:wrap"><button class="btn" id="ksave">Guardar</button>${K.fmp || K.av ? '<button class="btn ghost" id="kdel">Borrar mis claves</button>' : ''}</p>
+  <p class="small muted">Tus claves se guardan <b>solo en este navegador</b>: no se suben a GitHub ni las ve nadie más. Cada consulta va directamente de tu navegador al proveedor, y la web la recuerda 24 horas para no gastar tu cupo (con el plan gratuito puedes mirar unas 250 empresas al día). En otro ordenador o móvil tendrás que pegarlas otra vez.</p>`;
+}
+
+function tabEstimates(el, M, R) {
+  const { d, Y, L, n, ccy } = M;
+  const K = estKeys();
+  const hasKey = !!(K.fmp || K.av);
+  el.innerHTML = `<div class="card">
+    <h2>Previsiones de analistas (consenso)</h2>
+    <div class="info">Es la <b>media de lo que esperan los analistas</b> de bancos y casas de análisis que siguen la empresa: lo mismo que muestran TIKR o InvestingPro. Aquí lo comparamos con las <b>medias históricas</b> y con el <b>índice de predecibilidad</b>, y medimos cuánto <b>discrepan los analistas entre sí</b> para saber cuánto fiarse. <a href="#/guia">Cómo leerlo</a>.</div>
+    ${hasKey ? `<details><summary class="small muted">Claves de datos (${[K.fmp && 'Financial Modeling Prep', K.av && 'Alpha Vantage'].filter(Boolean).join(' y ')})</summary>${estKeyForm(K)}</details>` : estKeyForm(K)}
+  </div><div id="eout">${hasKey ? '<div class="loading">Pidiendo el consenso…</div>' : ''}</div>`;
+  const save = () => {
+    store.set(EST_KEYS, { fmp: ($('#kfmp').value || '').trim(), av: ($('#kav').value || '').trim() });
+    tabEstimates(el, M, R);
+  };
+  $('#ksave').addEventListener('click', save);
+  const del = $('#kdel');
+  if (del) del.addEventListener('click', () => { store.set(EST_KEYS, null); tabEstimates(el, M, R); });
+  if (!hasKey) return;
+  const load = force => getEstimates(d.ticker, force)
+    .then(data => renderEstimates($('#eout'), M, R, data, () => { $('#eout').innerHTML = '<div class="loading">Pidiendo el consenso…</div>'; load(true); }))
+    .catch(e => { const o = $('#eout'); if (o) o.innerHTML = `<div class="card"><div class="note"><b>No se ha podido obtener el consenso.</b> ${esc(e.message)}</div><p class="small muted">Si la empresa es pequeña o extranjera, puede que ningún proveedor gratuito la cubra. TIKR, Yahoo Finance (pestaña «Analysis») o Marketscreener la muestran en su web sin pagar.</p></div>`; });
+  load(false);
+}
+
+function renderEstimates(out, M, R, data, refresh) {
+  if (!out) return;
+  const { d, Y, L, n, ccy } = M;
+  const lastEnd = d.years[n - 1];
+  const P = predictability(M, R);
+  const cutoff = (() => { const t = new Date(lastEnd); t.setDate(t.getDate() + 60); return t.toISOString().slice(0, 10); })();
+  const yrs = data ? data.years.filter(y => y.date > cutoff).sort((a, b) => a.date < b.date ? -1 : 1).slice(0, 5) : [];
+  if (!yrs.length) {
+    out.innerHTML = `<div class="card"><p>No hay previsiones de analistas para ${esc(d.ticker)} en ${data ? esc(data.source) : 'los proveedores configurados'}. Suele pasar con empresas pequeñas o que cotizan sobre todo fuera de EE. UU.</p></div>`;
+    return;
+  }
+  const full = data.full;
+  const fy = y => 'Ej. ' + y.date.slice(0, 4) + 'e';
+  const lastRev = Y.revenue[n - 1], lastEps = Y.eps[n - 1];
+  // ¿Están las estimaciones en la misma divisa y escala que los informes? (p. ej., ADR o empresas que informan en otra moneda)
+  const ratio = div(yrs[0].revenue.avg, lastRev);
+  const sameUnits = isNum(ratio) && ratio > 0.4 && ratio < 2.5;
+  const yearsAfter = y => (new Date(y.date) - new Date(lastEnd)) / (365.25 * 864e5);
+  const gOf = (a, b, t) => (isNum(a) && isNum(b) && a > 0 && b > 0 && t > 0.5) ? Math.pow(b / a, 1 / Math.round(t)) - 1 : null;
+  const C = yrs.map(y => {
+    const t = yearsAfter(y);
+    return Object.assign({}, y, {
+      t, agr: yearConsensus(y),
+      revG: sameUnits ? gOf(lastRev, y.revenue.avg, t) : null,
+      epsG: sameUnits ? gOf(lastEps, y.eps.avg, t) : null,
+      ebitdam: div(y.ebitda.avg, y.revenue.avg), om: div(y.ebit.avg, y.revenue.avg), nm: div(y.ni.avg, y.revenue.avg)
+    });
+  });
+  const first = C[0], near = C.slice(0, 3);
+  const consG = (() => { const z = [...near].reverse().find(c => isNum(c.revG)); return z ? z.revG : null; })();
+  const consEpsG = (() => { const z = [...near].reverse().find(c => isNum(c.epsG)); return z ? z.epsG : null; })();
+  const avgOf = k => avg(near.map(c => c[k]));
+  const row = k => P.rows.find(r => r.key === k) || {};
+  const histEpsG = { a5: cagr(Y.eps[n - 6], Y.eps[n - 1], 5), a10: cagr(Y.eps[n - 11], Y.eps[n - 1], 10) };
+  const ebitdamHist = { a5: avg(R.ebitdam.slice(-5)), a10: avg(R.ebitdam.slice(-10)) };
+  // Compara el consenso con la historia: diferencia en puntos.
+  const verdict = (c, h, tolPts) => {
+    if (!isNum(c) || !isNum(h)) return '';
+    const dp = (c - h) * 100;
+    if (Math.abs(dp) <= tolPts) return '<span class="badge up">En línea con su historia</span>';
+    return dp > 0 ? `<span class="badge mid">Más optimista (+${fmt(dp, 1)} pts)</span>` : `<span class="badge mid">Más pesimista (${fmt(dp, 1)} pts)</span>`;
+  };
+  const cmpRows = [
+    ['Crecimiento anual de ventas', row('g').a5, row('g').a10, consG, 3, 'Consenso = crecimiento anual compuesto desde el último ejercicio publicado hasta el último año previsto (máx. 3).'],
+    ['Crecimiento anual del BPA', histEpsG.a5, histEpsG.a10, consEpsG, 5, 'Ojo: los analistas suelen estimar el BPA «ajustado» (sin partidas extraordinarias), que suele ser algo mayor que el BPA oficial de los informes.'],
+    ...(full ? [
+      ['Margen EBITDA', ebitdamHist.a5, ebitdamHist.a10, avgOf('ebitdam'), 3, DEF.ebitdam],
+      ['Margen operativo (EBIT)', row('om').a5, row('om').a10, avgOf('om'), 3, DEF.om],
+      ['Margen neto', row('nm').a5, row('nm').a10, avgOf('nm'), 3, DEF.nm + ' Los analistas suelen usar el beneficio ajustado.']
+    ] : [])
+  ];
+  const consScore = first.agr.score;
+  const lvC = levelOf(consScore), lvP = levelOf(P.score);
+  const offTrack = cmpRows.filter(r => isNum(r[3]) && isNum(r[1] ?? r[2]) && Math.abs((r[3] - (r[1] ?? r[2])) * 100) > r[4]).length;
+  const reading = (() => {
+    if (!lvC) return 'No hay suficientes datos de máximos y mínimos para medir el acuerdo entre analistas.';
+    if (lvC === 'alta' && lvP === 'alta' && !offTrack) return 'Empresa predecible, analistas de acuerdo entre sí y previsiones en línea con su historia: es el caso en que el consenso suele acertar más.';
+    if (lvC === 'alta' && offTrack) return 'Los analistas están de acuerdo entre sí, pero esperan algo distinto de lo que la empresa ha hecho en el pasado. Busca por qué (nuevo producto, adquisición, ciclo…) antes de dar por buena la previsión.';
+    if (lvC === 'baja') return 'Los analistas discrepan mucho entre sí: el futuro de la empresa es incierto y la media puede servir de poco. Fíjate en el mínimo, no en la media.';
+    if (lvP === 'baja') return 'La empresa ha sido poco predecible en el pasado. Aunque el consenso parezca razonable, los analistas suelen fallar más en este tipo de empresas.';
+    return 'Fiabilidad intermedia: úsalo como referencia, con supuestos algo más prudentes que la media de los analistas.';
+  })();
+  const dispCell = (e, ag, money_) => `${money_(e.low)} – ${money_(e.high)}<div class="small muted">${isNum(ag.spread) ? 'dispersión ' + fmt(ag.spread * 100, 0) + ' %' : ''}</div>`;
+  const B = v => big(v, ccy), E = v => isNum(v) ? fmt(v) : '–';
+  const metric = (label, key, f, ag, tip) => C.some(c => isNum(c[key].avg)) ? `<tr class="section"><td colspan="${C.length + 1}">${label}${tip ? ' ' + help(tip) : ''}</td></tr>
+      <tr><td>Media</td>${C.map(c => `<td><b>${f(c[key].avg)}</b></td>`).join('')}</tr>
+      <tr><td>Mínimo – máximo</td>${C.map(c => `<td>${dispCell(c[key], ag ? ag(c) : { spread: spreadOf(c[key]) }, f)}</td>`).join('')}</tr>
+      <tr><td>Nº de analistas</td>${C.map(c => `<td>${isNum(c[key].n) ? fmt(c[key].n, 0) : '–'}</td>`).join('')}</tr>` : '';
+  const pctRow = (label, key, tip) => C.some(c => isNum(c[key])) ? `<tr><td>${label}${tip ? ' ' + help(tip) : ''}</td>${C.map(c => `<td>${pct(c[key])}</td>`).join('')}</tr>` : '';
+  const revisions = C.filter(c => isNum(c.up30) || isNum(c.eps90));
+  const fetchedTxt = data.fetched ? new Date(data.fetched).toLocaleString('es-ES', { dateStyle: 'short', timeStyle: 'short' }) : '';
+
+  out.innerHTML = `
+  <div class="card">
+    <div class="result" style="margin-top:0">
+      <div class="box hl"><div class="muted small">Acuerdo entre analistas (${esc(fy(first))}) ${help('Nota de 0 a 100 según la dispersión de las estimaciones: (máximo − mínimo) / media, de las ventas (40 %) y del BPA (60 %). Si hay menos de 4 analistas no puede pasar de «media». Cuanto más de acuerdo están, más fiable suele ser la media.')}</div><div class="v">${isNum(consScore) ? fmt(consScore, 0) + ' <span class="small muted">/ 100</span>' : '–'}</div><div>${levelBadge(consScore)}</div></div>
+      <div class="box"><div class="muted small">Predecibilidad histórica ${help('El índice de la pestaña «Proyección y rentabilidad»: lo constantes que han sido ventas, márgenes y ROIC en 10 años.')}</div><div class="v">${isNum(P.score) ? fmt(P.score, 0) + ' <span class="small muted">/ 100</span>' : '–'}</div><div>${levelBadge(P.score)}</div></div>
+      <div class="box" style="grid-column: span 2"><div class="small"><b>Cómo leerlo:</b> ${reading}</div></div>
+    </div>
+    ${sameUnits ? '' : `<div class="note">Las previsiones no parecen estar en la misma moneda o escala que los informes (${esc(ccy)}${d.currency !== 'USD' ? ', mientras que la acción cotiza en dólares' : ''}). Se muestran tal cual, pero no se calculan crecimientos frente al último año publicado.</div>`}
+    ${full ? '' : '<div class="note">Estos datos vienen de Alpha Vantage, que solo da ventas y BPA del ejercicio actual y el siguiente. Con una clave de Financial Modeling Prep verías también EBITDA, EBIT, beneficio neto y más años.</div>'}
+    <h3>Consenso frente a su historia</h3>
+    <div class="tbl-wrap"><table><thead><tr><th>Métrica</th><th>Media 5 años</th><th>Media 10 años</th><th>Consenso analistas</th><th>Comparación con la media de 5 años</th></tr></thead><tbody>
+      ${cmpRows.map(([l, a5, a10, c, tol, tip]) => `<tr><td>${l} ${help(tip)}</td><td>${pct(a5)}</td><td>${pct(a10)}</td><td><b>${pct(c)}</b></td><td>${verdict(c, a5 ?? a10, tol)}</td></tr>`).join('')}
+    </tbody></table></div>
+    <p class="small muted">Márgenes del consenso: media de los próximos ${near.length} ejercicios. «En línea» = menos de 3 puntos de diferencia (5 en el BPA).</p>
+    <p style="display:flex;gap:.5rem;flex-wrap:wrap"><button class="btn ghost" id="euse" ${isNum(consG) ? '' : 'disabled'}>Usar el consenso en la proyección</button></p>
+    <p class="small muted">El botón copia en la pestaña «Proyección y rentabilidad» el crecimiento de ventas${full ? ' y el margen neto' : ''} de los analistas; el resto de supuestos (PER, acciones, payout) se quedan como estén.</p>
+  </div>
+  <div class="card">
+    <h2>Estimaciones año a año</h2>
+    <div class="tbl-wrap"><table><thead><tr><th></th><th>Últ. ejercicio (${esc(lastEnd.slice(0, 4))})</th>${C.map(c => `<th>${esc(fy(c))}</th>`).join('')}</tr></thead><tbody>
+      <tr class="section"><td colspan="${C.length + 2}">Resumen</td></tr>
+      <tr><td>Ventas</td><td>${B(lastRev)}</td>${C.map(c => `<td>${B(c.revenue.avg)}</td>`).join('')}</tr>
+      <tr><td>Crecimiento de ventas</td><td>${pct(R.revg[n - 1])}</td>${C.map((c, i) => `<td>${sameUnits ? pct(div(c.revenue.avg, i ? C[i - 1].revenue.avg : lastRev) - 1) : '–'}</td>`).join('')}</tr>
+      ${full ? `<tr><td>EBITDA</td><td>${B(Y.ebitda[n - 1])}</td>${C.map(c => `<td>${B(c.ebitda.avg)}</td>`).join('')}</tr>
+      <tr><td>Margen EBITDA</td><td>${pct(R.ebitdam[n - 1])}</td>${C.map(c => `<td>${pct(c.ebitdam)}</td>`).join('')}</tr>
+      <tr><td>Margen operativo (EBIT)</td><td>${pct(R.om[n - 1])}</td>${C.map(c => `<td>${pct(c.om)}</td>`).join('')}</tr>
+      <tr><td>Beneficio neto</td><td>${B(Y.ni[n - 1])}</td>${C.map(c => `<td>${B(c.ni.avg)}</td>`).join('')}</tr>
+      <tr><td>Margen neto</td><td>${pct(R.nm[n - 1])}</td>${C.map(c => `<td>${pct(c.nm)}</td>`).join('')}</tr>` : ''}
+      <tr><td>BPA</td><td>${E(lastEps)}</td>${C.map(c => `<td>${E(c.eps.avg)}</td>`).join('')}</tr>
+      <tr><td>PER con el precio actual ${help('Precio actual / BPA previsto de cada año. Sirve para ver si la acción está cara respecto a lo que se espera que gane.')}</td><td>${mult(L.eps > 0 ? div(M.price, lastEps) : null)}</td>${C.map(c => `<td>${sameUnits && c.eps.avg > 0 ? mult(div(M.price, c.eps.avg)) : '–'}</td>`).join('')}</tr>
+      <tr><td>Acuerdo entre analistas</td><td></td>${C.map(c => `<td>${levelBadge(c.agr.score)}</td>`).join('')}</tr>
+    </tbody></table></div>
+    <h3 style="margin-top:1rem">Detalle: media, mínimo, máximo y número de analistas</h3>
+    <div class="tbl-wrap"><table><thead><tr><th></th>${C.map(c => `<th>${esc(fy(c))}<div class="small muted">cierre ${esc(c.date)}</div></th>`).join('')}</tr></thead><tbody>
+      ${metric('Ventas', 'revenue', B, c => c.agr.rev)}
+      ${full ? metric('EBITDA', 'ebitda', B) + metric('EBIT (beneficio operativo)', 'ebit', B) + metric('Beneficio neto', 'ni', B, null, 'Normalmente ajustado: sin partidas extraordinarias.') : ''}
+      ${metric('BPA (beneficio por acción)', 'eps', E, c => c.agr.eps, 'Normalmente ajustado: sin partidas extraordinarias.')}
+    </tbody></table></div>
+    <p class="small muted">Dispersión = (máximo − mínimo) / media. En ventas, menos de un 8 % es mucho acuerdo y más de un 20 % es poco; en el BPA, menos de un 15 % y más de un 40 %. Cuanto más lejano el año, menos analistas y más dispersión: es normal.</p>
+    ${revisions.length ? `<h3 style="margin-top:1rem">Revisiones del BPA ${help('Cambios en las estimaciones recientes. Si los analistas suben sus previsiones (revisiones al alza), suele ser buena señal; si las bajan, mala.')}</h3>
+    <div class="tbl-wrap"><table><thead><tr><th></th>${revisions.map(c => `<th>${esc(fy(c))}</th>`).join('')}</tr></thead><tbody>
+      <tr><td>BPA esperado hace 90 días</td>${revisions.map(c => `<td>${E(c.eps90)}</td>`).join('')}</tr>
+      <tr><td>BPA esperado hoy</td>${revisions.map(c => `<td>${E(c.eps.avg)}${isNum(c.eps90) && c.eps90 ? ` <span class="small ${c.eps.avg >= c.eps90 ? 'good' : 'bad'}">${c.eps.avg >= c.eps90 ? '+' : ''}${pct(c.eps.avg / c.eps90 - 1)}</span>` : ''}</td>`).join('')}</tr>
+      <tr><td>Analistas que suben / bajan (30 días)</td>${revisions.map(c => `<td><span class="good">${isNum(c.up30) ? fmt(c.up30, 0) : '–'}</span> / <span class="bad">${isNum(c.down30) ? fmt(c.down30, 0) : '–'}</span></td>`).join('')}</tr>
+    </tbody></table></div>` : ''}
+    <div class="grid g2" style="margin-top:1rem">
+      <div><h3>Ventas: historia y consenso</h3><div class="chart-box"><canvas id="ech1"></canvas></div></div>
+      <div><h3>BPA: historia y consenso</h3><div class="chart-box"><canvas id="ech2"></canvas></div></div>
+    </div>
+    <p class="small muted">Fuente: ${esc(data.source)}, con tu clave personal${fetchedTxt ? ` · consultado el ${esc(fetchedTxt)}` : ''} · <a href="#" id="erefresh">actualizar ahora</a>. Las previsiones de analistas fallan a menudo, sobre todo más allá de 1-2 años. No es asesoramiento financiero.</p>
+  </div>`;
+
+  // Gráficos: histórico + media del consenso con banda mínimo-máximo.
+  const hy = d.years.map(y => y.slice(0, 4)).slice(-10);
+  const labels = hy.concat(C.map(c => c.date.slice(0, 4) + 'e'));
+  const k = hy.length;
+  const series = (hist, key, scale) => {
+    const h = hist.slice(-10).map(v => isNum(v) ? v / scale : null).concat(C.map(() => null));
+    const join = (arr) => hist.slice(-10).map((v, i) => i === k - 1 && isNum(v) ? v / scale : null).concat(arr);
+    return {
+      h, avg: join(C.map(c => isNum(c[key].avg) ? c[key].avg / scale : null)),
+      low: join(C.map(c => isNum(c[key].low) ? c[key].low / scale : null)),
+      high: join(C.map(c => isNum(c[key].high) ? c[key].high / scale : null))
+    };
+  };
+  const col = COLORS();
+  const draw = (id, s, name) => chart($(id), { type: 'line', data: { labels, datasets: [
+    { label: name + ' histórico', data: s.h, borderColor: col[0], backgroundColor: col[0], spanGaps: true },
+    { label: 'Mínimo analistas', data: s.low, borderColor: 'transparent', backgroundColor: 'transparent', pointRadius: 0, spanGaps: true },
+    { label: 'Rango analistas (mín.–máx.)', data: s.high, borderColor: 'transparent', backgroundColor: col[2] + '33', fill: '-1', pointRadius: 0, spanGaps: true },
+    { label: 'Media analistas', data: s.avg, borderColor: col[2], backgroundColor: col[2], borderDash: [6, 4], spanGaps: true }] },
+    options: { plugins: { legend: { labels: { boxWidth: 12, filter: it => !/Mínimo/.test(it.text) } } } } });
+  if (sameUnits) {
+    draw('#ech1', series(Y.revenue, 'revenue', 1e6), 'Ventas (M)');
+    draw('#ech2', series(Y.eps, 'eps', 1), 'BPA');
+  } else {
+    $('#ech1').closest('.grid').innerHTML = '';
+  }
+
+  $('#erefresh').addEventListener('click', ev => { ev.preventDefault(); refresh(); });
+  $('#euse').addEventListener('click', () => {
+    const pk = 'proj:' + d.ticker;
+    const cur = store.get(pk) || {};
+    const upd = Object.assign({}, cur, { g: consG });
+    const nm = avgOf('nm');
+    if (full && isNum(nm)) upd.nm = nm;
+    store.set(pk, upd);
+    location.hash = '#/c/' + d.ticker + '/proyeccion';
+  });
 }
 
 function chgBadge(c) {
@@ -992,7 +1294,8 @@ function glossary() {
   <p><b>Estados financieros:</b> de los informes anuales y trimestrales (10-K, 10-Q, 20-F, 40-F) que las empresas presentan a la SEC de EE. UU. en formato XBRL. Cubre las empresas cotizadas en EE. UU., incluidas muchas extranjeras que cotizan allí (ADR). No cubre empresas que solo cotizan en Europa u otros mercados.</p>
   <p><b>Precios:</b> Yahoo Finance, actualizados una vez al día.</p>
   <p><b>Grandes inversores:</b> formularios 13F de la SEC, que los gestores con más de 100 millones de dólares deben presentar cada trimestre.</p>
-  <p><b>Proyecciones:</b> cálculos propios a partir de los históricos. No son estimaciones de consenso de analistas, que solo están disponibles en servicios de pago.</p></div>`;
+  <p><b>Proyecciones:</b> cálculos propios a partir de los históricos.</p>
+  <p><b>Previsiones de analistas:</b> consenso de Financial Modeling Prep (o Alpha Vantage como respaldo), pedido desde tu navegador con tu propia clave gratuita. La web no guarda ni publica esos datos.</p></div>`;
 }
 
 
@@ -1041,6 +1344,18 @@ function guide() {
   <ul><li><b>Rentabilidad anual esperada</b>: lo que ganarías al año si se cumple el escenario base.</li>
   <li><b>Precio máximo</b>: a qué precio tendrías que comprar para lograr tu rentabilidad objetivo. Si el precio actual está por encima, la acción está cara para tu objetivo: puedes esperar a que baje.</li>
   <li><b>Escenarios</b>: mira sobre todo el <b>pesimista</b>. Una buena compra es la que en el escenario base te da tu objetivo y en el pesimista no te hace perder dinero.</li></ul></div>
+
+  <div class="card"><h2>Previsiones de analistas: qué son y cuánto fiarse</h2>
+  <p>Unos 10-50 analistas de bancos y casas de análisis siguen a cada gran empresa y publican cuánto creen que venderá y ganará los próximos años. La <b>media</b> de todos ellos es el <b>consenso</b>. TIKR o InvestingPro lo compran a proveedores como S&amp;P Capital IQ; aquí se pide gratis a <b>Financial Modeling Prep</b> con tu propia clave (la primera vez la pestaña te explica cómo conseguirla en un minuto).</p>
+  <h3>Tres preguntas para saber cuánto fiarse</h3>
+  <ol><li><b>¿Están de acuerdo los analistas?</b> Mira la <b>dispersión</b>: (máximo − mínimo) / media. Si para el próximo año un analista espera un BPA de 5,8 y otro de 6,2 con una media de 6, la dispersión es del 7 %: mucho acuerdo. Si van de 3 a 9, es del 100 %: nadie sabe lo que va a pasar. La web lo resume en la nota <b>Acuerdo entre analistas</b> (0-100), con los mismos tramos que el índice de predecibilidad.</li>
+  <li><b>¿Cuántos analistas hay?</b> Con 1-3 la media es poco representativa (la nota no pasa de «media»). Con 15 o más, mucho mejor.</li>
+  <li><b>¿Encaja con su historia?</b> El cuadro «Consenso frente a su historia» compara lo que esperan los analistas con las medias de 5 y 10 años. Si la empresa es predecible y los analistas esperan algo parecido a su pasado, la previsión es razonable. Si esperan mucho más (o mucho menos), busca el motivo antes de creértelo.</li></ol>
+  <h3>Limitaciones que conviene saber</h3>
+  <ul><li>Los analistas suelen ser <b>optimistas</b>, sobre todo a 2-3 años vista, y fallan más en empresas cíclicas o en pérdidas.</li>
+  <li>Estiman el BPA <b>ajustado</b> (sin partidas extraordinarias), que suele ser algo mayor que el BPA oficial que ves en Estados financieros.</li>
+  <li>El proveedor gratuito no da previsiones de flujo de caja libre (FCF). Para el DCF puedes usar el crecimiento de ventas del consenso como referencia.</li></ul>
+  <p><b>Uso práctico:</b> el botón <b>Usar el consenso en la proyección</b> copia el crecimiento de ventas y el margen neto de los analistas en la Parte 1. Luego mira el escenario pesimista: si aun así te da una rentabilidad aceptable, tienes margen de seguridad aunque los analistas se equivoquen.</p></div>
 
   <div class="card"><h2>Parte 2. Valor intrínseco (DCF), casilla a casilla</h2>
   <dl class="gloss">
