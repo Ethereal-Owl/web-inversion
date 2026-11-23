@@ -4,7 +4,7 @@ Web estática estilo TIKR / InvestingPro, gratis y sin servidor:
 
 - **Ficha de cada acción** (≈ todas las empresas que presentan cuentas a la SEC de EE. UU., incluidas muchas extranjeras con ADR): estados financieros anuales y de los últimos 12 meses, márgenes, ROCE, ROIC, ROE, crecimiento, deuda, ratios de valoración históricos.
 - **Valor intrínseco (DCF)** con supuestos editables, tabla de sensibilidad y DCF inverso.
-- **Proyección y rentabilidad esperada** a N años con escenarios pesimista / base / optimista.
+- **Proyección y rentabilidad esperada** a N años con escenarios pesimista / base / optimista, medias de 5 y 10 años de cada supuesto y un **índice de predecibilidad** (0-100) que indica cuánto fiarse de la proyección.
 - **Grandes inversores**: carteras 13F trimestrales y sus movimientos (nuevas, aumenta, reduce, vende todo).
 - **Buscador (screener)** con filtros por métricas.
 

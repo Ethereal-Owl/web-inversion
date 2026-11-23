@@ -305,6 +305,97 @@ function ltmRatios(M) {
   return R;
 }
 
+// ---------------------------------------------------------------- medias históricas y fiabilidad
+const stdev = a => { if (a.length < 2) return null; const m = sum(a) / a.length; return Math.sqrt(sum(a.map(x => (x - m) ** 2)) / (a.length - 1)); };
+const lastVals = (a, k) => a.slice(-k).filter(isNum);
+// Convierte una medida de dispersión en una nota de 0 a 100: 0 → 100; «a» → 70 (límite de fiabilidad alta); «b» → 40 (límite de media); 2·b → 0.
+function dispScore(x, a, b) {
+  if (!isNum(x)) return null;
+  if (x <= a) return 100 - 30 * x / a;
+  if (x <= b) return 70 - 30 * (x - a) / (b - a);
+  return Math.max(0, 40 - 40 * (x - b) / b);
+}
+const LEVELS = { alta: ['Alta', 'up'], media: ['Media', 'mid'], baja: ['Baja', 'down'] };
+const levelOf = s => !isNum(s) ? null : s >= 70 ? 'alta' : s >= 40 ? 'media' : 'baja';
+const levelBadge = s => { const l = levelOf(s); return l ? `<span class="badge ${LEVELS[l][1]}">${LEVELS[l][0]}</span>` : '<span class="muted small">sin datos</span>'; };
+
+// Medias de 5 y 10 años y fiabilidad (predecibilidad) de las métricas que usa la proyección.
+// La fiabilidad se mide con los últimos 10 años (mínimo 5 con datos).
+function predictability(M, R) {
+  const { Y, n } = M;
+  const W = 10, MIN = 5;
+  const out = [];
+  // Crecimiento de ventas: la «media» es el crecimiento anual compuesto; la fiabilidad, lo que se desvía cada año (desviación típica, en puntos).
+  {
+    const g = lastVals(R.revg, W), sd = g.length >= MIN ? stdev(g) : null;
+    const up = g.filter(v => v > 0).length;
+    const c = k => cagr(Y.revenue[n - 1 - k], Y.revenue[n - 1], k);
+    out.push({ key: 'g', input: 'pg', label: 'Crecimiento de ventas', help: 'Media = crecimiento anual compuesto (CAGR). Variabilidad = desviación típica del crecimiento de cada año.',
+      a5: c(5), a10: c(10) ?? (g.length >= MIN ? cagr(Y.revenue[n - 1 - g.length], Y.revenue[n - 1], g.length) : null), f: pct,
+      score: dispScore(isNum(sd) ? sd * 100 : null, 5, 10), years: g.length, inIndex: 0.3,
+      disp: isNum(sd) ? `± ${fmt(sd * 100, 1)} pts · creció ${up} de ${g.length} años` : '–' });
+  }
+  // Métricas de nivel (márgenes, ROIC, PER): coeficiente de variación = desviación típica / media.
+  const level = (key, input, label, arr, a, b, w, opts = {}) => {
+    const v = lastVals(arr, W), m = avg(v), sd = v.length >= MIN ? stdev(v) : null;
+    const cv = isNum(sd) && isNum(m) && m > 0 ? sd / m : null;
+    const neg = v.filter(x => x < 0).length;
+    const score = v.length < MIN ? null : (isNum(m) && m > 0 ? dispScore(cv, a, b) : 0);
+    const mid = opts.median ? median : avg;
+    out.push({ key, input, label, help: opts.help, a5: mid(arr.slice(-5)), a10: mid(arr.slice(-10)), f: opts.f || pct,
+      score, years: v.length, inIndex: w,
+      disp: isNum(cv) ? `± ${opts.f === mult ? mult(sd) : fmt(sd * 100, 1) + ' pts'} · CV ${fmt(cv * 100, 0)} %${neg ? ` · ${neg} año${neg > 1 ? 's' : ''} negativo${neg > 1 ? 's' : ''}` : ''}` : (v.length >= MIN ? 'media negativa' : '–') });
+  };
+  level('om', null, 'Margen operativo', R.om, 0.15, 0.35, 0.2, { help: DEF.om });
+  level('nm', 'pnm', 'Margen neto', R.nm, 0.15, 0.35, 0.2, { help: DEF.nm });
+  level('roic', null, 'ROIC', R.roic, 0.15, 0.35, 0.3, { help: DEF.roic });
+  // Variación de acciones: puede ser 0 o negativa, así que se mide en puntos.
+  {
+    const v = lastVals(R.shg, W), sd = v.length >= MIN ? stdev(v) : null;
+    out.push({ key: 'shg', input: 'psh', label: 'Variación de acciones', help: DEF.shg, a5: avg(R.shg.slice(-5)), a10: avg(R.shg.slice(-10)), f: pct,
+      score: dispScore(isNum(sd) ? sd * 100 : null, 1.5, 4), years: v.length, inIndex: 0, disp: isNum(sd) ? `± ${fmt(sd * 100, 1)} pts` : '–' });
+  }
+  level('pe', 'ppe', 'PER (mediana)', R.pe, 0.2, 0.4, 0, { median: true, f: mult, help: 'PER al cierre de cada ejercicio. Se usa la mediana porque un año raro lo distorsiona mucho. Depende del humor del mercado, por eso no entra en el índice de la empresa.' });
+  {
+    const v = lastVals(R.payout, W);
+    out.push({ key: 'payout', input: 'ppo', label: 'Payout', help: DEF.payout, a5: avg(R.payout.slice(-5)), a10: avg(R.payout.slice(-10)), f: pct, score: null, years: v.length, inIndex: 0, disp: '' });
+  }
+
+  // Índice global: media ponderada de crecimiento de ventas (30 %), ROIC (30 %), margen operativo (20 %) y margen neto (20 %).
+  const parts = out.filter(r => r.inIndex && isNum(r.score));
+  const wsum = sum(parts.map(r => r.inIndex));
+  let score = wsum >= 0.5 ? sum(parts.map(r => r.score * r.inIndex)) / wsum : null;
+  const warnings = [];
+  const yrsData = lastVals(Y.revenue, W).length;
+  const losses = lastVals(Y.ni, W).filter(v => v < 0).length;
+  if (yrsData < 8) warnings.push(`solo hay ${yrsData} años de datos`);
+  if (losses) warnings.push(`ha tenido pérdidas ${losses} año${losses > 1 ? 's' : ''} de los últimos ${Math.min(W, yrsData)}`);
+  const capped = isNum(score) && warnings.length > 0 && score > 55;
+  if (capped) score = 55;
+  return { rows: out, score, warnings, capped, years: yrsData };
+}
+
+function predictabilityCard(P, withButtons) {
+  const l = levelOf(P.score);
+  const text = {
+    alta: 'Los números de la empresa han sido estables: usar sus medias históricas para proyectar tiene sentido.',
+    media: 'Hay altibajos: la proyección sirve como orientación, pero usa supuestos prudentes y mira sobre todo el escenario pesimista.',
+    baja: 'Los resultados han cambiado mucho de un año a otro: el pasado no es una buena guía y la rentabilidad calculada es poco fiable.'
+  }[l] || 'No hay suficientes años de datos para medir la fiabilidad.';
+  return `<div class="card">
+    <h2>Medias históricas y fiabilidad ${help('Fiabilidad = lo constante que ha sido cada métrica en los últimos 10 años. Cuanto más constante, más razonable es suponer que seguirá parecida y más fiable es la proyección. Explicación completa en la guía.')}</h2>
+    <div class="result" style="margin-top:.5rem">
+      <div class="box hl"><div class="muted small">Índice de predecibilidad de la empresa</div><div class="v">${isNum(P.score) ? fmt(P.score, 0) + ' <span class="small muted">/ 100</span>' : '–'}</div><div>${levelBadge(P.score)}</div></div>
+      <div class="box" style="grid-column: span 2"><div class="small">${text}</div>${P.warnings.length ? `<div class="small muted" style="margin-top:.3rem">${P.capped ? 'Limitado a «media» porque' : 'Además,'} ${P.warnings.join(' y ')}.</div>` : ''}<div class="small muted" style="margin-top:.3rem">70-100 alta · 40-69 media · 0-39 baja. <a href="#/guia">Cómo se calcula</a></div></div>
+    </div>
+    <div class="tbl-wrap"><table><thead><tr><th>Métrica</th><th>Media 5 años</th><th>Media 10 años</th><th>Variabilidad (10 años) ${help('«±» es la desviación típica: cuánto se aleja normalmente cada año de la media. CV (coeficiente de variación) = desviación típica / media: un CV del 10 % significa que la métrica suele moverse un 10 % arriba o abajo de su media.')}</th><th>Fiabilidad</th></tr></thead><tbody>
+      ${P.rows.map(r => `<tr><td>${esc(r.label)}${r.help ? ' ' + help(r.help) : ''}</td><td>${r.f(r.a5)}</td><td>${r.f(r.a10)}</td><td class="small">${r.disp}</td><td>${r.key === 'payout' ? '' : levelBadge(r.score)}${r.inIndex ? '' : (r.key === 'payout' ? '' : ' <span class="muted small">(no entra en el índice)</span>')}</td></tr>`).join('')}
+    </tbody></table></div>
+    ${withButtons ? `<p style="display:flex;gap:.5rem;flex-wrap:wrap"><button class="btn ghost" data-avg="5">Rellenar la proyección con las medias de 5 años</button><button class="btn ghost" data-avg="10">Rellenar con las medias de 10 años</button></p>
+    <p class="small muted">Los botones solo cambian crecimiento de ventas, margen neto, variación de acciones, PER y payout. El índice usa crecimiento de ventas (30 %), ROIC (30 %), margen operativo (20 %) y margen neto (20 %).</p>` : ''}
+  </div>`;
+}
+
 // ---------------------------------------------------------------- ficha de empresa
 async function company(ticker, tab) {
   ticker = ticker.toUpperCase();
@@ -376,6 +467,7 @@ function tabSummary(el, M, R, LR) {
       ${tile('Crec. ventas 10 años', pct(revC10) + '/año', 'revg')}
       ${tile('Crec. BPA 5 años', pct(epsC5) + '/año', 'epsg')}
       ${tile('Crec. FCF 5 años', pct(fcfC5) + '/año')}
+      ${(() => { const P = predictability(M, R); return `<div class="tile"><div class="k">Predecibilidad${help('Índice de 0 a 100 que mide lo constantes que han sido las ventas, los márgenes y el ROIC en los últimos 10 años. Detalle en la pestaña «Proyección y rentabilidad».')}</div><div class="v">${isNum(P.score) ? fmt(P.score, 0) : '–'} ${levelBadge(P.score)}</div></div>`; })()}
     </div>
   </div>
   <div class="grid g2">
@@ -646,8 +738,9 @@ function tabProjection(el, M, R) {
     price: M.price
   };
   const s = Object.assign({}, def, store.get(key) || {});
+  const P = predictability(M, R);
   const f = (id, label, val, step, tip) => `<label>${label}${tip ? ' ' + help(tip) : ''}<input id="${id}" type="number" step="${step}" value="${isNum(val) ? +val.toFixed(Math.abs(val) >= 1000 ? 0 : 2) : ''}" inputmode="decimal"></label>`;
-  el.innerHTML = `
+  el.innerHTML = predictabilityCard(P, true) + `
   <div class="card">
     <h2>Proyección de resultados y rentabilidad esperada</h2>
     <p class="info">¿No sabes qué poner? Lee la <a href="#/guia">guía paso a paso</a> (parte 1).</p>
@@ -692,7 +785,9 @@ function tabProjection(el, M, R) {
     const bull = project({ ...p, g: p.g * 1.3 + 0.01, nm: p.nm * 1.1, pe: p.pe * 1.2 });
     const cls = v => isNum(v) ? (v >= 0.1 ? 'good' : v < 0.05 ? 'bad' : '') : '';
     const maxBuy = isNum(p.target) && base.priceEnd + base.divs > 0 ? (base.priceEnd + base.divs) / Math.pow(1 + p.target / 100, p.years) : null;
+    const lv = levelOf(P.score);
     out.innerHTML = `
+    ${lv === 'baja' ? '<div class="note"><b>Fiabilidad baja</b> (índice ' + fmt(P.score, 0) + '/100): esta empresa ha sido poco predecible y la rentabilidad calculada puede alejarse mucho de la real. Tómala solo como orientación.</div>' : lv === 'media' ? '<div class="note"><b>Fiabilidad media</b> (índice ' + fmt(P.score, 0) + '/100): usa supuestos prudentes y fíjate sobre todo en el escenario pesimista.</div>' : ''}
     <div class="result">
       <div class="box hl"><div class="muted small">Rentabilidad anual esperada (escenario base)</div><div class="v ${cls(base.cagr)}">${pct(base.cagr)}</div><div class="small muted">incluye dividendos (sin reinvertir)</div></div>
       <div class="box"><div class="muted small">Precio objetivo en ${p.years} años</div><div class="v">${money(base.priceEnd, ccy)}</div></div>
@@ -727,6 +822,16 @@ function tabProjection(el, M, R) {
       { label: 'BPA proyectado (base)', data: projEps, borderColor: C[2], backgroundColor: C[2], borderDash: [6, 4], spanGaps: true }] } });
   };
   el.querySelectorAll('input').forEach(i => i.addEventListener('input', run));
+  el.querySelectorAll('button[data-avg]').forEach(b => b.addEventListener('click', () => {
+    const k = b.dataset.avg === '5' ? 'a5' : 'a10';
+    P.rows.forEach(r => {
+      const v = r[k], inp = r.input && $('#' + r.input);
+      if (!inp || !isNum(v)) return;
+      const x = r.f === pct ? v * 100 : v;
+      inp.value = +x.toFixed(2);
+    });
+    run();
+  }));
   $('#preset').addEventListener('click', () => { store.set(key, null); tabProjection(el, M, R); });
   run();
 }
@@ -905,17 +1010,29 @@ function guide() {
   <p>La web ya rellena todo con valores por defecto sacados del histórico. Tu trabajo es <b>revisar si esos valores son razonables</b> y, si dudas, ser algo más prudente.</p></div>
 
   <div class="card"><h2>Antes de nada: ¿es predecible la empresa?</h2>
-  <p>Abre la pestaña <b>Métricas</b> y mira los últimos 10 años:</p>
-  <ul><li>¿Las <b>ventas</b> crecen casi todos los años, o suben y bajan mucho?</li>
-  <li>¿El <b>margen operativo</b> y el <b>ROCE</b> son estables, o cambian mucho de un año a otro?</li>
-  <li>¿La <b>deuda neta / EBITDA</b> es baja (menos de 2-3x)?</li></ul>
-  <p>Si todo es estable, las proyecciones tendrán sentido. Si la empresa es muy cíclica (petroleras, mineras, constructoras de coches, navieras…), tiene pérdidas o es un banco o aseguradora, las proyecciones son poco fiables: úsalas con mucha cautela o no las uses.</p></div>
+  <p>Toda proyección supone que el futuro se parecerá al pasado. Eso solo es razonable si el pasado ha sido <b>constante</b>. Para no tener que juzgarlo a ojo, la pestaña <b>Proyección y rentabilidad</b> empieza con un cuadro de <b>medias históricas y fiabilidad</b>, y el <b>Resumen</b> muestra el <b>índice de predecibilidad</b>.</p>
+  <h3>Medias de 5 y 10 años</h3>
+  <p>Para cada dato que entra en la proyección verás su media de los últimos 5 y 10 años: crecimiento de ventas (anual compuesto), margen operativo, margen neto, ROIC, variación de acciones, PER (mediana) y payout. Si las dos medias se parecen, la empresa es estable. Si la de 5 años es mucho mejor que la de 10, pregúntate si esa mejora es duradera o un buen momento pasajero; en la duda, usa la de 10 años o un número intermedio. Con los botones <b>«Rellenar con las medias»</b> pasas esos valores a la proyección de un clic.</p>
+  <h3>Fiabilidad de cada métrica</h3>
+  <p>Mide cuánto se ha movido cada métrica en los últimos 10 años:</p>
+  <ul><li><b>Márgenes, ROIC y PER</b>: se usa el <b>coeficiente de variación (CV)</b> = desviación típica / media. Un CV del 10 % quiere decir que la métrica suele estar un 10 % por encima o por debajo de su media. Ejemplo: un margen medio del 20 % con CV 10 % se mueve normalmente entre el 18 % y el 22 %.<br>Fiabilidad <b>alta</b> si el CV es menor del 15 % (PER: 20 %), <b>media</b> hasta el 35 % (PER: 40 %) y <b>baja</b> por encima. Si la media es negativa (pérdidas), es baja.</li>
+  <li><b>Crecimiento de ventas</b>: se usa la <b>desviación típica</b> del crecimiento de cada año, en puntos. Ejemplo: si crece de media un 8 % con ± 3 puntos, casi todos los años crece entre un 5 % y un 11 %. Alta por debajo de ± 5 puntos, media hasta ± 10 y baja por encima. También verás cuántos años crecieron las ventas.</li>
+  <li><b>Variación de acciones</b>: alta por debajo de ± 1,5 puntos, media hasta ± 4.</li></ul>
+  <h3>Índice de predecibilidad (0 a 100)</h3>
+  <p>Resume en un número lo predecible que es la empresa. Cada métrica recibe una nota de 0 a 100 según su variabilidad y se hace una media ponderada: <b>crecimiento de ventas 30 %, ROIC 30 %, margen operativo 20 % y margen neto 20 %</b>. El PER no entra porque depende del humor del mercado, no del negocio. Si la empresa ha tenido <b>pérdidas</b> algún año de los últimos 10 o hay <b>menos de 8 años</b> de datos, el índice no puede pasar de «media».</p>
+  <div class="tbl-wrap"><table><thead><tr><th>Índice</th><th>Fiabilidad</th><th>Qué hacer</th></tr></thead><tbody>
+  <tr><td>70-100</td><td><span class="badge up">Alta</span></td><td style="white-space:normal;text-align:left">Negocio estable. Las medias históricas son un buen punto de partida y la rentabilidad calculada es una referencia útil.</td></tr>
+  <tr><td>40-69</td><td><span class="badge mid">Media</span></td><td style="white-space:normal;text-align:left">Hay altibajos. Úsala como orientación, con supuestos prudentes (la media de 10 años o la peor de las dos) y decide mirando el escenario pesimista.</td></tr>
+  <tr><td>0-39</td><td><span class="badge down">Baja</span></td><td style="white-space:normal;text-align:left">El pasado no sirve para predecir. No te fíes de la proyección ni del DCF: son típicas las empresas cíclicas, en pérdidas o en plena transformación.</td></tr>
+  </tbody></table></div>
+  <p>Fíjate también en <b>qué</b> métrica falla. Si las ventas son estables pero el margen no, el negocio es sólido pero su rentabilidad depende del ciclo: usa un margen conservador. Si lo que falla es el crecimiento de ventas, ponte en un crecimiento bajo.</p>
+  <p class="muted small">Un índice alto no garantiza nada: mide el pasado. Comprueba también que la <b>deuda neta / EBITDA</b> sea baja (menos de 2-3x) y que entiendes el negocio. Los bancos y aseguradoras pueden salir estables, pero estas herramientas no están pensadas para ellos.</p></div>
 
   <div class="card"><h2>Parte 1. Proyección y rentabilidad, casilla a casilla</h2>
   <dl class="gloss">
   <dt>Años de inversión</dt><dd>Déjalo en 5. Más allá todo es más incierto.</dd>
-  <dt>Crecimiento anual de ventas</dt><dd>Por defecto, lo que creció en los últimos 5 años. Mira en <b>Resumen</b> el crecimiento a 5 y a 10 años. Usa el <b>menor</b> de los dos y, si la empresa es ya muy grande, réstale un poco. Referencias: empresa madura (Coca-Cola, Procter & Gamble) 3-6 %; empresa de calidad que aún crece (Visa, Microsoft) 8-12 %; más del 15 % durante 5 años lo consiguen muy pocas.</dd>
-  <dt>Margen neto</dt><dd>Por defecto, la media de los últimos 3 años. En <b>Métricas</b> comprueba que no sea un año excepcional. Si el margen de los 3 últimos años es mucho mayor que el de antes, usa un número intermedio.</dd>
+  <dt>Crecimiento anual de ventas</dt><dd>Por defecto, lo que creció en los últimos 5 años. Mira en el cuadro de medias el crecimiento a 5 y a 10 años. Usa el <b>menor</b> de los dos y, si la empresa es ya muy grande, réstale un poco. Referencias: empresa madura (Coca-Cola, Procter & Gamble) 3-6 %; empresa de calidad que aún crece (Visa, Microsoft) 8-12 %; más del 15 % durante 5 años lo consiguen muy pocas.</dd>
+  <dt>Margen neto</dt><dd>Por defecto, la media de los últimos 3 años. Compárala con las medias de 5 y 10 años del cuadro de fiabilidad. Si el margen reciente es mucho mayor que el de antes, usa un número intermedio o la media de 10 años.</dd>
   <dt>Variación anual de acciones</dt><dd>Si la empresa recompra acciones, saldrá negativo (por ejemplo −2 %) y eso aumenta tu beneficio por acción. Si emite acciones, saldrá positivo. Suele bastar con el valor por defecto.</dd>
   <dt>PER de salida (la casilla más importante)</dt><dd>Es a cuántas veces beneficios crees que cotizará la acción dentro de 5 años. Por defecto, la mediana de los últimos 10 años. Reglas prudentes: no pongas más que el PER actual ni más que la mediana histórica; empresa madura 12-18; buena empresa con crecimiento moderado 18-25; más de 25 solo para empresas excepcionales que sigan creciendo rápido. Si hoy cotiza a PER 40, asumir que seguirá a 40 es arriesgado.</dd>
   <dt>Payout</dt><dd>Parte del beneficio que reparte como dividendo. Deja el valor por defecto.</dd>
@@ -952,11 +1069,11 @@ function guide() {
   <ul><li>Usar el crecimiento de los mejores años como si fuera a repetirse siempre.</li>
   <li>Poner un PER de salida alto «porque ahora cotiza así».</li>
   <li>Fiarse de un único número. Un valor intrínseco no es un precio exacto, es un rango: mira la tabla de sensibilidad y los escenarios.</li>
-  <li>Usar el DCF en bancos, aseguradoras, empresas con pérdidas o muy cíclicas.</li>
+  <li>Usar el DCF o la proyección en bancos, aseguradoras, empresas con pérdidas o muy cíclicas (índice de predecibilidad bajo).</li>
   <li>Olvidar comprobar los datos: si algo parece raro, revisa el informe oficial con el enlace «informes en la SEC».</li></ul></div>
 
   <div class="card"><h2>Lista rápida antes de comprar</h2>
-  <ol><li>¿Es un negocio estable y lo entiendo? (Métricas: ventas, márgenes y ROCE de 10 años)</li>
+  <ol><li>¿Es un negocio estable y lo entiendo? (Índice de predecibilidad alto o, como mínimo, medio)</li>
   <li>¿Tiene poca deuda? (deuda neta / EBITDA menor de 2-3x)</li>
   <li>Con supuestos prudentes, ¿la rentabilidad esperada base supera mi objetivo?</li>
   <li>¿El escenario pesimista evita pérdidas?</li>
