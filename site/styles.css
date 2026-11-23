@@ -97,6 +97,7 @@ td.ttm, th.ttm { background: var(--accent-soft); }
 .badge.new { background: var(--accent-soft); color: var(--accent); }
 .badge.up { background: var(--good-soft); color: var(--good); }
 .badge.down { background: var(--bad-soft); color: var(--bad); }
+.badge.mid { background: var(--warn-soft); color: var(--warn); }
 .btn { background: var(--accent); color: #fff; border: 0; border-radius: 8px; padding: .45rem .9rem; font: inherit; cursor: pointer; }
 .btn.ghost { background: var(--bg); color: var(--text); border: 1px solid var(--line); }
 .bar { height: 6px; background: var(--line); border-radius: 3px; overflow: hidden; min-width: 60px; }
