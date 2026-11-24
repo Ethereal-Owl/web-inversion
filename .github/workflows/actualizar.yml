@@ -44,9 +44,18 @@ jobs:
         env:
           SEC_USER_AGENT: ${{ vars.SEC_USER_AGENT }}
           OPENFIGI_API_KEY: ${{ secrets.OPENFIGI_API_KEY }}
-        run: python scripts/build_data.py ${{ vars.BUILD_ARGS }}
-      - name: Resumen de comprobación (para revisar los datos en el registro)
+        shell: bash   # con pipefail: si el script falla, el paso falla
+        run: python scripts/build_data.py ${{ vars.BUILD_ARGS }} 2>&1 | tee build.log
+      - name: Borrar ficheros grandes temporales
+        run: rm -f .cache/*.zip
+      - uses: actions/configure-pages@v5
+      - uses: actions/upload-pages-artifact@v3
+        with:
+          path: site
+      - name: Resumen de comprobación (al final para que se lea en la cola del registro)
+        if: always()
         run: |
+          grep -E "^[0-9]/6|directivos|formularios|trimestres|Listo|Traceback|Error" build.log | grep -v "^  SEC 404" | tail -40 || true
           python - <<'PY'
           import json, pathlib
           for t in ["AAPL", "MSFT", "NVDA", "KO", "BRK.B", "ASML", "NVO"]:
@@ -70,12 +79,6 @@ jobs:
                   print("    ", t["d"], t["c"], t["n"], round(t["s"]), "a", t["p"], "->", t["o"])
           print(open("site/data/meta.json").read())
           PY
-      - name: Borrar ficheros grandes temporales
-        run: rm -f .cache/*.zip
-      - uses: actions/configure-pages@v5
-      - uses: actions/upload-pages-artifact@v3
-        with:
-          path: site
 
   deploy:
     needs: build
