@@ -18,7 +18,9 @@ import zipfile
 import xml.etree.ElementTree as ET
 from pathlib import Path
 
-DATASET_URL = "https://www.sec.gov/files/structureddata/data/insider-transactions-data-sets/{y}q{q}_form345.zip"
+# La SEC ha cambiado la carpeta: desde 2026T2 está en «datastandardsinnovation». Se prueban las dos.
+DATASET_URLS = ["https://www.sec.gov/files/datastandardsinnovation/data/insider-transactions-data-sets/{y}q{q}_form345.zip",
+                "https://www.sec.gov/files/structureddata/data/insider-transactions-data-sets/{y}q{q}_form345.zip"]
 WINDOW_DAYS = 366          # operaciones que se muestran
 HOLD_DAYS = 3 * 365        # antigüedad máxima de un formulario para contar las acciones que posee
 MAX_TX = 150               # filas máximas por empresa
@@ -156,10 +158,15 @@ def load_datasets(download, cache_dir, issuer_ciks, today, n_quarters=4):
         end = end.replace(day=1) - dt.timedelta(days=1)
         if end >= today:  # el trimestre en curso todavía no se ha publicado
             continue
-        try:
-            p = download(DATASET_URL.format(y=y, q=q), cache_dir / f"form345_{y}q{q}.zip", max_age_hours=24 * 20)
-        except Exception as e:
-            print(f"  sin datos de directivos {y}T{q}: {e}", file=sys.stderr)
+        p, err = None, None
+        for url in DATASET_URLS:
+            try:
+                p = download(url.format(y=y, q=q), cache_dir / f"form345_{y}q{q}.zip", max_age_hours=24 * 20)
+                break
+            except Exception as e:
+                err = e
+        if p is None:
+            print(f"  sin datos de directivos {y}T{q}: {err}", file=sys.stderr)
             if got:  # hay un hueco más antiguo: no seguir
                 break
             continue
