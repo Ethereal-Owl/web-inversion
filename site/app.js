@@ -405,7 +405,7 @@ async function company(ticker, tab) {
   const M = buildModel(d), R = yearRatios(M), LR = ltmRatios(M);
   const { L, ccy } = M;
   tab = tab || 'resumen';
-  const TABS = [['resumen', 'Resumen'], ['finanzas', 'Estados financieros'], ['metricas', 'Métricas'], ['valoracion', 'Valor intrínseco (DCF)'], ['proyeccion', 'Proyección y rentabilidad'], ['previsiones', 'Previsiones de analistas'], ['inversores', 'Grandes inversores']];
+  const TABS = [['resumen', 'Resumen'], ['finanzas', 'Estados financieros'], ['metricas', 'Métricas'], ['valoracion', 'Valor intrínseco (DCF)'], ['proyeccion', 'Proyección y rentabilidad'], ['previsiones', 'Previsiones de analistas'], ['directivos', 'Directivos'], ['inversores', 'Grandes inversores']];
   const px = d.price;
   const chg1y = (() => { const h = (px && px.history) || []; if (h.length < 13) return null; return h[h.length - 1][1] / h[h.length - 13][1] - 1; })();
   const warn = [];
@@ -432,7 +432,7 @@ async function company(ticker, tab) {
   const renderTab = t => {
     destroyCharts();
     const el = $('#tab');
-    ({ resumen: tabSummary, finanzas: tabFinancials, metricas: tabMetrics, valoracion: tabDCF, proyeccion: tabProjection, previsiones: tabEstimates, inversores: tabHolders }[t] || tabSummary)(el, M, R, LR);
+    ({ resumen: tabSummary, finanzas: tabFinancials, metricas: tabMetrics, valoracion: tabDCF, proyeccion: tabProjection, previsiones: tabEstimates, directivos: tabInsiders, inversores: tabHolders }[t] || tabSummary)(el, M, R, LR);
   };
   renderTab(tab);
 }
@@ -467,6 +467,7 @@ function tabSummary(el, M, R, LR) {
       ${tile('Crec. ventas 10 años', pct(revC10) + '/año', 'revg')}
       ${tile('Crec. BPA 5 años', pct(epsC5) + '/año', 'epsg')}
       ${tile('Crec. FCF 5 años', pct(fcfC5) + '/año')}
+      ${(() => { if (!d.insiders) return ''; const v = insiderVerdict(d.insiders); return `<a class="tile" href="#/c/${encodeURIComponent(d.ticker)}/directivos" style="color:inherit"><div class="k">Directivos (12 meses)${help('Compras y ventas en bolsa de directivos y consejeros. Detalle en la pestaña «Directivos».')}</div><div class="v"><span class="badge ${v.cls}">${esc(v.text)}</span></div></a>`; })()}
       ${(() => { const P = predictability(M, R); return `<div class="tile"><div class="k">Predecibilidad${help('Índice de 0 a 100 que mide lo constantes que han sido las ventas, los márgenes y el ROIC en los últimos 10 años. Detalle en la pestaña «Proyección y rentabilidad».')}</div><div class="v">${isNum(P.score) ? fmt(P.score, 0) : '–'} ${levelBadge(P.score)}</div></div>`; })()}
     </div>
   </div>
@@ -1155,6 +1156,105 @@ function tabHolders(el, M) {
   el.querySelectorAll('tr[data-cik]').forEach(tr => tr.addEventListener('click', () => (location.hash = '#/inversor/' + tr.dataset.cik)));
 }
 
+// ---------------------------------------------------------------- directivos (insiders)
+const TX_CODES = {
+  P: ['Compra en bolsa', 'up', 'La persona ha comprado acciones con su propio dinero en el mercado. Es la señal más clara de confianza.'],
+  S: ['Venta en bolsa', 'down', 'Ha vendido acciones en el mercado. Puede ser por motivos personales (impuestos, diversificar, comprar una casa…), no necesariamente porque vea la acción cara.'],
+  A: ['Recibe acciones (sueldo)', 'new', 'Acciones que la empresa le entrega como parte de su remuneración. No paga por ellas.'],
+  M: ['Ejerce opciones', 'new', 'Convierte opciones o derechos que tenía en acciones.'],
+  X: ['Ejerce opciones', 'new', 'Convierte opciones que tenía en acciones.'],
+  C: ['Conversión', 'new', 'Convierte otro valor (p. ej. acciones de otra clase) en estas acciones.'],
+  F: ['Retención para impuestos', 'mid', 'La empresa se queda con parte de las acciones que le entrega para pagar sus impuestos. No es una venta voluntaria.'],
+  G: ['Regalo / donación', 'mid', 'Regala o dona acciones (p. ej. a una fundación o a familiares).'],
+  D: ['Devuelve a la empresa', 'mid', 'Entrega acciones a la propia empresa.'],
+  J: ['Otra', 'mid', 'Otro tipo de operación (se explica en el formulario).'],
+  W: ['Herencia', 'mid', 'Acciones recibidas o transmitidas por herencia.'],
+  I: ['Plan de la empresa', 'mid', 'Operación dentro de un plan de pensiones o de ahorro de la empresa.'],
+  L: ['Pequeña compra', 'new', 'Pequeña adquisición (menos de 10.000 $).'],
+  K: ['Derivado', 'mid', 'Operación con una permuta financiera u otro derivado.'],
+};
+const txInfo = c => TX_CODES[c] || ['Otra (' + (c || '?') + ')', 'mid', 'Otro tipo de operación.'];
+const txAmount = t => isNum(t.s) && isNum(t.p) && t.p > 0 ? t.s * t.p : null;
+
+function insiderStats(ins, months) {
+  const cut = new Date(); cut.setMonth(cut.getMonth() - months);
+  const c = cut.toISOString().slice(0, 10);
+  const r = { buy: 0, sell: 0, buyers: new Set(), sellers: new Set(), nb: 0, ns: 0 };
+  (ins.tx || []).forEach(t => {
+    if (t.d < c) return;
+    if (t.c === 'P') { r.buy += txAmount(t) || 0; r.buyers.add(t.n); r.nb++; }
+    if (t.c === 'S') { r.sell += txAmount(t) || 0; r.sellers.add(t.n); r.ns++; }
+  });
+  return r;
+}
+
+function insiderVerdict(ins) {
+  const s = insiderStats(ins, 12);
+  if (!s.nb && !s.ns) return { text: 'Sin compras ni ventas en bolsa', cls: '' };
+  if (s.nb && !s.ns) return { text: 'Solo compras', cls: 'up' };
+  if (!s.nb && s.ns) return { text: 'Solo ventas', cls: 'down' };
+  return s.buy >= s.sell ? { text: 'Compran más que venden', cls: 'up' } : { text: 'Venden más que compran', cls: 'down' };
+}
+
+async function tabInsiders(el, M) {
+  const d = M.d, ins = d.insiders;
+  const px = d.price && d.price.price;
+  const shOut = d.sharesOutstanding;
+  let meta = null;
+  try { meta = await getJSON('meta.json'); } catch (e) { /* sin meta */ }
+  const im = (meta && meta.insiders) || {};
+  const secLink = `https://www.sec.gov/cgi-bin/browse-edgar?action=getcompany&CIK=${d.cik}&type=4&dateb=&owner=include&count=40`;
+  const intro = `<div class="info">Los <b>directivos, consejeros y accionistas con más del 10 %</b> de una empresa de EE. UU. están obligados a comunicar a la SEC cada compra o venta de acciones en un plazo de 2 días hábiles (formulario 4). Aquí ves <b>cuántas acciones tiene cada uno</b> según su último formulario y <b>qué ha hecho en los últimos 12 meses</b>.
+    <br>Cómo leerlo: <b>las compras en bolsa son la señal más útil</b>, porque alguien que conoce la empresa por dentro pone su propio dinero. Las ventas son mucho más frecuentes y a menudo no significan nada (pagar impuestos, diversificar, ventas programadas de antemano con un plan 10b5-1). Fíjate sobre todo en compras de <b>varios directivos a la vez</b> o en ventas grandes <b>fuera de plan</b>.</div>`;
+  if (!ins || (!(ins.owners || []).length && !(ins.tx || []).length)) {
+    el.innerHTML = `<div class="card"><h2>Directivos y consejeros</h2>${intro}
+      <p>No hay formularios de directivos de esta empresa en los últimos 3 años en nuestros datos. Suele pasar con empresas extranjeras (con ADR), que no están obligadas a presentarlos, o con empresas muy pequeñas.</p>
+      <p><a href="${secLink}" target="_blank" rel="noopener">Ver los formularios en la SEC</a></p></div>`;
+    return;
+  }
+  const S = [3, 6, 12].map(m => [m, insiderStats(ins, m)]);
+  const v = insiderVerdict(ins);
+  const owners = ins.owners || [];
+  const totalOwned = sum(owners.map(o => o.s));
+  const mixClass = owners.some(o => o.cl > 1);
+  const statTile = (label, val, sub, cls) => `<div class="tile"><div class="k">${label}</div><div class="v ${cls || ''}">${val}</div><div class="small muted">${sub}</div></div>`;
+  const people = s => s.size === 1 ? '1 persona' : s.size + ' personas';
+  el.innerHTML = `
+  <div class="card"><h2>Directivos y consejeros <span class="badge ${v.cls}">${esc(v.text)}</span> <span class="muted small">(últimos 12 meses)</span></h2>${intro}
+    <div class="tbl-wrap"><table><thead><tr><th>Periodo</th><th>Compras en bolsa</th><th>Quién compra</th><th>Ventas en bolsa</th><th>Quién vende</th><th>Saldo</th></tr></thead><tbody>
+    ${S.map(([m, s]) => `<tr><td>Últimos ${m} meses</td><td class="${s.nb ? 'good' : ''}">${s.nb ? big(s.buy, 'USD') : '–'}</td><td>${s.nb ? people(s.buyers) : '–'}</td><td class="${s.ns ? 'bad' : ''}">${s.ns ? big(s.sell, 'USD') : '–'}</td><td>${s.ns ? people(s.sellers) : '–'}</td><td class="${s.buy - s.sell >= 0 ? 'good' : 'bad'}">${s.nb || s.ns ? (s.buy - s.sell >= 0 ? '+' : '') + big(s.buy - s.sell, 'USD') : '–'}</td></tr>`).join('')}
+    </tbody></table></div>
+  </div>
+  <div class="card"><h2>Cuántas acciones tienen</h2>
+    <div class="tiles" style="margin-bottom:.6rem">
+      ${statTile('Entre todos', big(totalOwned) + ' acciones', isNum(px) ? '≈ ' + big(totalOwned * px, 'USD') : '')}
+      ${statTile('Parte de la empresa', isNum(shOut) && shOut > 0 ? pct(totalOwned / shOut, 2) : '–', 'de todas las acciones')}
+    </div>
+    <div class="tbl-wrap"><table><thead><tr><th>Persona</th><th style="text-align:left">Cargo</th><th>Acciones</th><th>% empresa</th><th>Valor aprox.</th><th>Directas</th><th>Último formulario</th></tr></thead><tbody>
+    ${owners.map(o => `<tr><td>${esc(o.n)}</td><td style="text-align:left">${esc(o.r)}</td><td>${fmt(o.s, 0)}</td><td>${isNum(shOut) && shOut > 0 ? pct(o.s / shOut, 2) : '–'}</td><td>${isNum(px) ? big(o.s * px, 'USD') : '–'}</td><td>${o.s ? pct(o.sd / o.s, 0) : '–'}</td><td>${esc(o.d)}</td></tr>`).join('')}
+    </tbody></table></div>
+    <p class="muted small">Acciones que declaró en su último formulario (de los últimos 3 años). «Directas» = a su nombre; el resto las tiene a través de familiares, fideicomisos o sociedades. No incluye opciones sin ejercer. Solo aparecen quienes han presentado algún formulario en ese plazo: un directivo que no ha operado en 3 años puede faltar; la lista completa está en el informe anual a los accionistas (proxy, DEF 14A).${mixClass ? ' <b>Ojo:</b> esta empresa tiene varias clases de acciones y aquí se suman todas, así que el valor es aproximado.' : ''}</p>
+  </div>
+  <div class="card"><h2>Operaciones recientes</h2>
+    <div class="filters" style="margin-bottom:.6rem"><label>Mostrar<select id="txf"><option value="ps">Solo compras y ventas en bolsa</option><option value="all">Todas (también sueldo en acciones, opciones, impuestos, regalos…)</option></select></label></div>
+    <div class="tbl-wrap"><table><thead><tr><th>Fecha</th><th style="text-align:left">Persona</th><th style="text-align:left">Cargo</th><th style="text-align:left">Operación</th><th>Acciones</th><th>Precio</th><th>Importe</th><th>Le quedan</th><th>Plan 10b5-1 ${help('Plan de compraventa programado con meses de antelación. Las operaciones dentro de un plan dicen menos sobre lo que piensa el directivo hoy.')}</th></tr></thead><tbody id="txb"></tbody></table></div>
+    <p class="muted small" id="txn"></p>
+    <p class="muted small">Fuente: formularios 3, 4 y 5 de la SEC. Fecha = día de la operación. Datos hasta ${esc(ins.lastFiled || '–')}${im.pendingRecent ? ` (todavía se están descargando ${fmt(im.pendingRecent, 0)} formularios de las últimas semanas para todas las empresas; se completan en las próximas actualizaciones)` : ''}. <a href="${secLink}" target="_blank" rel="noopener">Ver los formularios originales en la SEC</a>.</p>
+  </div>`;
+  const draw = () => {
+    const all = $('#txf').value === 'all';
+    const rows = (ins.tx || []).filter(t => all || t.c === 'P' || t.c === 'S');
+    $('#txb').innerHTML = rows.length ? rows.map(t => {
+      const [lbl, cls, tip] = txInfo(t.c);
+      return `<tr><td>${esc(t.d)}</td><td style="text-align:left">${esc(t.n)}</td><td style="text-align:left">${esc(t.r)}</td><td style="text-align:left"><span class="badge ${cls}" title="${esc(tip)}">${esc(lbl)}</span>${t.i ? ' <span class="muted small" title="A través de familiares, fideicomisos o sociedades">indirecta</span>' : ''}</td>
+        <td class="${t.a === 'D' ? 'bad' : t.a === 'A' ? 'good' : ''}">${t.a === 'D' ? '−' : t.a === 'A' ? '+' : ''}${fmt(t.s, 0)}</td><td>${isNum(t.p) ? money(t.p, 'USD') : '–'}</td><td>${big(txAmount(t), 'USD')}</td><td>${fmt(t.o, 0)}</td><td>${t.pl ? 'Sí' : ''}</td></tr>`;
+    }).join('') : `<tr><td colspan="9" style="text-align:left">${all ? 'No hay operaciones en los últimos 12 meses.' : 'Ninguna compra ni venta en bolsa en los últimos 12 meses. Prueba con «Todas».'}</td></tr>`;
+    $('#txn').textContent = ins.nTx > (ins.tx || []).length ? `Se muestran las ${ins.tx.length} más recientes de ${ins.nTx} operaciones en 12 meses.` : '';
+  };
+  $('#txf').addEventListener('change', draw);
+  draw();
+}
+
 // ---------------------------------------------------------------- inversores
 async function investors() {
   const list = await getJSON('investors/index.json');
@@ -1294,6 +1394,7 @@ function glossary() {
   <p><b>Estados financieros:</b> de los informes anuales y trimestrales (10-K, 10-Q, 20-F, 40-F) que las empresas presentan a la SEC de EE. UU. en formato XBRL. Cubre las empresas cotizadas en EE. UU., incluidas muchas extranjeras que cotizan allí (ADR). No cubre empresas que solo cotizan en Europa u otros mercados.</p>
   <p><b>Precios:</b> Yahoo Finance, actualizados una vez al día.</p>
   <p><b>Grandes inversores:</b> formularios 13F de la SEC, que los gestores con más de 100 millones de dólares deben presentar cada trimestre.</p>
+  <p><b>Directivos:</b> formularios 3, 4 y 5 de la SEC, que directivos, consejeros y accionistas con más del 10 % deben presentar en 2 días hábiles cada vez que compran o venden. Se usan los conjuntos de datos trimestrales de la SEC y, para las semanas más recientes, cada formulario 4. Solo empresas de EE. UU.</p>
   <p><b>Proyecciones:</b> cálculos propios a partir de los históricos.</p>
   <p><b>Previsiones de analistas:</b> consenso de Financial Modeling Prep (o Alpha Vantage como respaldo), pedido desde tu navegador con tu propia clave gratuita. La web no guarda ni publica esos datos.</p></div>`;
 }

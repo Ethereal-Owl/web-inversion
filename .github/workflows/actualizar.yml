@@ -32,8 +32,14 @@ jobs:
           path: .cache/cusip_map.json
           key: cusip-${{ github.run_id }}
           restore-keys: cusip-
+      - name: Recuperar caché de operaciones de directivos
+        uses: actions/cache@v4
+        with:
+          path: .cache/insiders_recent.json.gz
+          key: insiders-${{ github.run_id }}
+          restore-keys: insiders-
       - name: Comprobar el procesado
-        run: python tests/test_extract.py
+        run: python tests/test_extract.py && python tests/test_insiders.py
       - name: Descargar y procesar datos
         env:
           SEC_USER_AGENT: ${{ vars.SEC_USER_AGENT }}
@@ -55,6 +61,13 @@ jobs:
                     "| ttm bº", round((d["ttm"].get("netIncome") or 0) / 1e9, 1),
                     "| acciones", d.get("sharesOutstanding"), "| precio", (d.get("price") or {}).get("price"),
                     "| inversores", len(d.get("holders", [])))
+              ins = d.get("insiders") or {}
+              print("   directivos:", len(ins.get("owners", [])), "| operaciones 12m:", ins.get("nTx"),
+                    "| compras/ventas:", ins.get("nPS"), "| último formulario:", ins.get("lastFiled"))
+              for o in ins.get("owners", [])[:3]:
+                  print("    ", o["n"], "|", o["r"], "|", round(o["s"]), "acciones |", o["d"])
+              for t in ins.get("tx", [])[:3]:
+                  print("    ", t["d"], t["c"], t["n"], round(t["s"]), "a", t["p"], "->", t["o"])
           print(open("site/data/meta.json").read())
           PY
       - name: Borrar ficheros grandes temporales
