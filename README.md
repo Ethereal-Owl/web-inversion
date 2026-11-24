@@ -6,6 +6,7 @@ Web estática estilo TIKR / InvestingPro, gratis y sin servidor:
 - **Valor intrínseco (DCF)** con supuestos editables, tabla de sensibilidad y DCF inverso.
 - **Proyección y rentabilidad esperada** a N años con escenarios pesimista / base / optimista, medias de 5 y 10 años de cada supuesto y un **índice de predecibilidad** (0-100) que indica cuánto fiarse de la proyección.
 - **Previsiones de analistas** (consenso): ventas, EBITDA, EBIT, beneficio neto y BPA de los próximos años con mínimo, máximo y nº de analistas, comparadas con las medias históricas y el índice de predecibilidad, y una nota de «acuerdo entre analistas» según la dispersión de las estimaciones.
+- **Directivos** (insiders): cuántas acciones tienen los directivos y consejeros y sus compras y ventas de los últimos 12 meses (formularios 3, 4 y 5 de la SEC), con un resumen de compras frente a ventas a 3, 6 y 12 meses.
 - **Grandes inversores**: carteras 13F trimestrales y sus movimientos (nuevas, aumenta, reduce, vende todo).
 - **Buscador (screener)** con filtros por métricas.
 
@@ -16,6 +17,7 @@ Web estática estilo TIKR / InvestingPro, gratis y sin servidor:
    - Sector: SEC (`submissions.zip`).
    - Precios mensuales de 10 años: Yahoo Finance (alternativa: Stooq).
    - Carteras: formularios 13F de la SEC. CUSIP → ticker con OpenFIGI (gratis).
+   - Directivos: conjuntos de datos trimestrales de la SEC «Insider Transactions Data Sets» (últimos 4 trimestres) y, para los días posteriores, cada formulario 4 en XML. Los formularios recientes se guardan en la caché de Actions y en cada ejecución se descargan como máximo 10.000 (`--insider-max`), de los más nuevos a los más antiguos; tras la primera ejecución basta con los del día.
 2. Genera JSON en `site/data/`.
 3. GitHub Actions (`.github/workflows/actualizar.yml`) lo ejecuta de martes a sábado y publica `site/` en GitHub Pages.
 

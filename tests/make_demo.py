@@ -1,6 +1,7 @@
 """Genera datos FICTICIOS con el mismo formato que la web, para probar la interfaz sin conexión.
 Uso: python tests/make_demo.py <carpeta_salida>
 """
+import datetime as dt
 import json
 import math
 import random
@@ -69,9 +70,20 @@ for t, n, seed, r0, g, m in companies:
     ccy = "EUR" if t == "EURO" else "USD"
     f, px = fake_company(seed, r0, g, m, ccy)
     holders = [{"cik": 1, "manager": "Inversor Ficticio A", "weight": 0.12, "value": 5e9, "shares": 2e7, "chg": "new", "period": "2025-09-30"}] if t == "DEMO" else []
+    insiders = None
+    ago = lambda n: (dt.date.today() - dt.timedelta(days=n)).isoformat()
+    if t == "DEMO":
+        insiders = {"owners": [{"n": "PEREZ ANA (FICTICIA)", "r": "Chief Executive Officer, Consejero", "s": 3.2e6, "sd": 2.9e6, "d": ago(10), "cl": 1},
+                               {"n": "GOMEZ LUIS (FICTICIO)", "r": "Chief Financial Officer", "s": 410000, "sd": 410000, "d": ago(50), "cl": 1},
+                               {"n": "RUIZ MARTA (FICTICIA)", "r": "Consejero", "s": 52000, "sd": 52000, "d": ago(100), "cl": 1}],
+                    "tx": [{"d": ago(12), "n": "PEREZ ANA (FICTICIA)", "r": "Chief Executive Officer, Consejero", "c": "S", "s": 50000, "p": px["price"], "a": "D", "o": 2.9e6, "i": 0, "pl": 1},
+                           {"d": ago(51), "n": "GOMEZ LUIS (FICTICIO)", "r": "Chief Financial Officer", "c": "F", "s": 3000, "p": px["price"] * 0.95, "a": "D", "o": 410000, "i": 0, "pl": 0},
+                           {"d": ago(101), "n": "RUIZ MARTA (FICTICIA)", "r": "Consejero", "c": "P", "s": 4000, "p": px["price"] * 0.9, "a": "A", "o": 52000, "i": 0, "pl": 0},
+                           {"d": ago(270), "n": "GOMEZ LUIS (FICTICIO)", "r": "Chief Financial Officer", "c": "A", "s": 20000, "p": None, "a": "A", "o": 413000, "i": 0, "pl": 0}],
+                    "lastFiled": ago(10), "nTx": 4, "nPS": 2}
     fx = 1.08 if ccy == "EUR" else 1
     doc = {"ticker": t, "name": n, "cik": seed, "exchange": "NYSE", "sector": "Sector ficticio", "country": "", "web": "",
-           **f, "price": px, "fxUSD": fx, "holders": holders}
+           **f, "price": px, "fxUSD": fx, "holders": holders, "insiders": insiders}
     (out / "c" / f"{t}.json").write_text(json.dumps(doc))
     index.append([t, n, "NYSE"])
     screener.append({"t": t, "n": n, "s": "Sector ficticio", "c": ccy, "p": px["price"], **bd.summary_metrics(f, px, fx), "h": len(holders)})

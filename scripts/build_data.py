@@ -40,6 +40,9 @@ from pathlib import Path
 
 import requests
 
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+import insiders as ins  # noqa: E402
+
 ROOT = Path(__file__).resolve().parent.parent
 OUT = ROOT / "site" / "data"
 CACHE = ROOT / ".cache"
@@ -732,12 +735,15 @@ def main():
     ap.add_argument("--skip-prices", action="store_true")
     ap.add_argument("--skip-13f", action="store_true")
     ap.add_argument("--workers", type=int, default=6)
+    ap.add_argument("--skip-insiders", action="store_true")
+    ap.add_argument("--insider-max", type=int, default=10000,
+                    help="máximo de formularios 4 recientes que se descargan en cada ejecución")
     args = ap.parse_args()
 
     OUT.mkdir(parents=True, exist_ok=True)
     (OUT / "c").mkdir(exist_ok=True)
 
-    print("1/5 Lista de empresas")
+    print("1/6 Lista de empresas")
     tickers = load_tickers()
     if args.tickers:
         want = {t.strip().upper() for t in args.tickers.split(",")}
@@ -749,7 +755,7 @@ def main():
         by_cik.setdefault(t["cik"], []).append(t)
     print(f"  {len(tickers)} tickers, {len(by_cik)} empresas")
 
-    print("2/5 Fundamentales (SEC companyfacts)")
+    print("2/6 Fundamentales (SEC companyfacts)")
     fundamentals = {}
     small = len(by_cik) <= 200
     if small:
@@ -780,7 +786,7 @@ def main():
                     print(f"  {n}/{len(by_cik)}")
     print(f"  {len(fundamentals)} empresas con fundamentales")
 
-    print("3/5 Sectores")
+    print("3/6 Sectores")
     sic = load_sic(list(fundamentals)) if not small else {}
     if small:
         for cik in fundamentals:
@@ -791,7 +797,7 @@ def main():
                             "web": d.get("website") or "", "state": d.get("stateOfIncorporation") or "",
                             "country": (d.get("addresses", {}).get("business", {}) or {}).get("stateOrCountryDescription") or ""}
 
-    print("4/5 Precios")
+    print("4/6 Precios")
     tick_list = [t for t in tickers if t["cik"] in fundamentals]
     prices = {}
     if not args.skip_prices:
@@ -817,9 +823,33 @@ def main():
                 fx[ccy] = v
     print(f"  divisas: {fx}")
 
-    print("5/5 Grandes inversores (13F)")
+    print("5/6 Grandes inversores (13F)")
     holders = {} if args.skip_13f else build_investors(load_tickers() if (args.limit or args.tickers) else tickers,
                                                         {t["ticker"] for t in tick_list})
+
+    print("6/6 Directivos (formularios 3, 4 y 5)")
+    insiders, ins_meta = {}, {}
+    if not args.skip_insiders:
+        zf = None
+        if not small and (CACHE / "submissions.zip").exists():
+            zf = zipfile.ZipFile(CACHE / "submissions.zip")
+
+        def submissions_of(cik):
+            if zf is not None:
+                try:
+                    return json.loads(zf.read(f"CIK{cik:010d}.json"))
+                except KeyError:
+                    return None
+            r = sec_get(f"https://data.sec.gov/submissions/CIK{cik:010d}.json")
+            return r.json() if r is not None else None
+
+        try:
+            insiders, ins_meta = ins.build(set(fundamentals), sec_get, download, CACHE, submissions_of,
+                                           max_fetch=args.insider_max)
+        except Exception as e:
+            print(f"  error en directivos: {e}", file=sys.stderr)
+        if zf is not None:
+            zf.close()
 
     print("Escribiendo ficheros")
     index, screener = [], []
@@ -829,7 +859,8 @@ def main():
         info = sic.get(t["cik"], {})
         doc = {"ticker": t["ticker"], "name": t["name"], "cik": t["cik"], "exchange": t["exchange"],
                "sector": info.get("sic", ""), "country": info.get("country", ""), "web": info.get("web", ""),
-               **f, "price": px, "fxUSD": fx.get(f["currency"]), "holders": sorted(holders.get(t["ticker"], []), key=lambda h: -h["value"])}
+               **f, "price": px, "fxUSD": fx.get(f["currency"]), "holders": sorted(holders.get(t["ticker"], []), key=lambda h: -h["value"]),
+               "insiders": insiders.get(t["cik"])}
         (OUT / "c" / f"{t['ticker']}.json").write_text(json.dumps(doc, separators=(",", ":"), allow_nan=False,
                                                                  default=lambda o: None))
         index.append([t["ticker"], t["name"], t["exchange"]])
@@ -839,7 +870,8 @@ def main():
     (OUT / "index.json").write_text(json.dumps(index, separators=(",", ":")))
     (OUT / "screener.json").write_text(json.dumps(screener, separators=(",", ":")))
     (OUT / "meta.json").write_text(json.dumps({"updated": dt.datetime.utcnow().strftime("%Y-%m-%d %H:%M UTC"),
-                                               "companies": len(index), "withPrice": len(prices)}))
+                                               "companies": len(index), "withPrice": len(prices),
+                                               "insiders": {**ins_meta, "companies": len(insiders)}}))
     print(f"Listo: {len(index)} empresas")
 
 
