@@ -788,6 +788,7 @@ function tabProjection(el, M, R) {
     const maxBuy = isNum(p.target) && base.priceEnd + base.divs > 0 ? (base.priceEnd + base.divs) / Math.pow(1 + p.target / 100, p.years) : null;
     const lv = levelOf(P.score);
     out.innerHTML = `
+    ${p.g > 0.2 ? `<div class="note"><b>Crecimiento muy alto:</b> un ${pct(p.g)} de crecimiento de ventas cada año durante ${p.years} años multiplica las ventas por ${fmt(Math.pow(1 + p.g, p.years), 1)}. Muy pocas empresas lo consiguen; prueba también con un crecimiento menor.</div>` : ''}
     ${lv === 'baja' ? '<div class="note"><b>Fiabilidad baja</b> (índice ' + fmt(P.score, 0) + '/100): esta empresa ha sido poco predecible y la rentabilidad calculada puede alejarse mucho de la real. Tómala solo como orientación.</div>' : lv === 'media' ? '<div class="note"><b>Fiabilidad media</b> (índice ' + fmt(P.score, 0) + '/100): usa supuestos prudentes y fíjate sobre todo en el escenario pesimista.</div>' : ''}
     <div class="result">
       <div class="box hl"><div class="muted small">Rentabilidad anual esperada (escenario base)</div><div class="v ${cls(base.cagr)}">${pct(base.cagr)}</div><div class="small muted">incluye dividendos (sin reinvertir)</div></div>
@@ -1004,9 +1005,38 @@ function renderEstimates(out, M, R, data, refresh) {
       ebitdam: div(y.ebitda.avg, y.revenue.avg), om: div(y.ebit.avg, y.revenue.avg), nm: div(y.ni.avg, y.revenue.avg)
     });
   });
-  const first = C[0], near = C.slice(0, 3);
+  // Años con pocos analistas (1-2): su media es la opinión de una o dos personas y no se usa para resumir.
+  C.forEach(c => { c.few = isNum(c.revenue.n) && c.revenue.n < 3; });
+  const reliable = C.filter(c => !c.few);
+  const first = C[0], near = (reliable.length ? reliable : C.slice(0, 1)).slice(0, 3);
   const consG = (() => { const z = [...near].reverse().find(c => isNum(c.revG)); return z ? z.revG : null; })();
+  // BPA de comprobación: beneficio neto previsto / acciones actuales. Si no cuadra con el BPA del proveedor, avisamos.
+  C.forEach(c => { c.epsCalc = div(c.ni.avg, L.shares); });
+  const epsOff = C.filter(c => isNum(c.epsCalc) && isNum(c.eps.avg) && c.eps.avg > 0 && c.epsCalc > 0 && (c.eps.avg / c.epsCalc > 1.6 || c.eps.avg / c.epsCalc < 0.6));
+  // En esos años se sustituye el BPA del proveedor por el calculado, para que tablas, PER y gráficos no salgan disparatados.
+  epsOff.forEach(c => { c.epsBad = c.eps.avg; c.eps = { avg: c.epsCalc, low: div(c.ni.low, L.shares), high: div(c.ni.high, L.shares), n: c.eps.n }; c.epsG = sameUnits ? gOf(lastEps, c.eps.avg, c.t) : null; });
   const consEpsG = (() => { const z = [...near].reverse().find(c => isNum(c.epsG)); return z ? z.epsG : null; })();
+  // Crecimiento equivalente para la proyección: ventas de los años con consenso fiable y, después, un crecimiento que se frena
+  // (la mitad del último año previsto, como mucho un 10 %). Se mide desde los últimos 12 meses, que es donde arranca la proyección.
+  const projYears = clamp(Math.round((store.get('proj:' + d.ticker) || {}).years || 5), 1, 30);
+  const projG = (() => {
+    const pts = near.filter(c => isNum(c.revenue.avg) && c.revenue.avg > 0);
+    if (!sameUnits || !pts.length || !isNum(L.revenue) || L.revenue <= 0) return null;
+    const t0 = new Date(L.date || lastEnd), yr = x => (new Date(x) - t0) / (365.25 * 864e5);
+    const path = [[0, L.revenue]].concat(pts.map(c => [yr(c.date), c.revenue.avg])).filter(([t]) => t >= 0).sort((a, b) => a[0] - b[0]);
+    const [tl, rl] = path[path.length - 1];
+    const prev = path.length > 1 ? path[path.length - 2] : null;
+    const lastG = prev && tl - prev[0] > 0.3 ? Math.pow(rl / prev[1], 1 / (tl - prev[0])) - 1 : (consG ?? 0);
+    const tail = clamp(lastG / 2, 0, 0.10);
+    let revEnd;
+    if (projYears >= tl) revEnd = rl * Math.pow(1 + tail, projYears - tl);
+    else { // interpolación entre dos puntos del camino
+      let i = 1; while (i < path.length && path[i][0] < projYears) i++;
+      const [ta, ra] = path[i - 1], [tb, rb] = path[i];
+      revEnd = ra * Math.pow(rb / ra, (projYears - ta) / (tb - ta));
+    }
+    return { g: Math.pow(revEnd / L.revenue, 1 / projYears) - 1, tail, until: pts[pts.length - 1].date.slice(0, 4) };
+  })();
   const avgOf = k => avg(near.map(c => c[k]));
   const row = k => P.rows.find(r => r.key === k) || {};
   const histEpsG = { a5: cagr(Y.eps[n - 6], Y.eps[n - 1], 5), a10: cagr(Y.eps[n - 11], Y.eps[n - 1], 10) };
@@ -1056,14 +1086,16 @@ function renderEstimates(out, M, R, data, refresh) {
       <div class="box" style="grid-column: span 2"><div class="small"><b>Cómo leerlo:</b> ${reading}</div></div>
     </div>
     ${sameUnits ? '' : `<div class="note">Las previsiones no parecen estar en la misma moneda o escala que los informes (${esc(ccy)}${d.currency !== 'USD' ? ', mientras que la acción cotiza en dólares' : ''}). Se muestran tal cual, pero no se calculan crecimientos frente al último año publicado.</div>`}
+    ${C.some(c => c.few) ? `<div class="note">Los años ${C.filter(c => c.few).map(c => esc(c.date.slice(0, 4))).join(', ')} tienen solo 1 o 2 analistas: es la opinión de muy poca gente y no se usan para los resúmenes ni para el botón de la proyección.</div>` : ''}
+    ${epsOff.length ? `<div class="note">El BPA que da el proveedor no cuadra con su propio beneficio neto dividido entre las acciones actuales (${epsOff.map(c => esc(c.date.slice(0, 4)) + ': ' + fmt(c.epsBad) + ' frente a ' + fmt(c.epsCalc)).join('; ')}). Parece un error de sus datos (por ejemplo, sin ajustar un split), así que en esos años se usa el BPA calculado.</div>` : ''}
     ${full ? '' : '<div class="note">Estos datos vienen de Alpha Vantage, que solo da ventas y BPA del ejercicio actual y el siguiente. Con una clave de Financial Modeling Prep verías también EBITDA, EBIT, beneficio neto y más años.</div>'}
     <h3>Consenso frente a su historia</h3>
     <div class="tbl-wrap"><table><thead><tr><th>Métrica</th><th>Media 5 años</th><th>Media 10 años</th><th>Consenso analistas</th><th>Comparación con la media de 5 años</th></tr></thead><tbody>
       ${cmpRows.map(([l, a5, a10, c, tol, tip]) => `<tr><td>${l} ${help(tip)}</td><td>${pct(a5)}</td><td>${pct(a10)}</td><td><b>${pct(c)}</b></td><td>${verdict(c, a5 ?? a10, tol)}</td></tr>`).join('')}
     </tbody></table></div>
     <p class="small muted">Márgenes del consenso: media de los próximos ${near.length} ejercicios. «En línea» = menos de 3 puntos de diferencia (5 en el BPA).</p>
-    <p style="display:flex;gap:.5rem;flex-wrap:wrap"><button class="btn ghost" id="euse" ${isNum(consG) ? '' : 'disabled'}>Usar el consenso en la proyección</button></p>
-    <p class="small muted">El botón copia en la pestaña «Proyección y rentabilidad» el crecimiento de ventas${full ? ' y el margen neto' : ''} de los analistas; el resto de supuestos (PER, acciones, payout) se quedan como estén.</p>
+    <p style="display:flex;gap:.5rem;flex-wrap:wrap"><button class="btn ghost" id="euse" ${projG ? '' : 'disabled'}>Usar el consenso en la proyección</button></p>
+    ${projG ? `<p class="small muted">El botón pone en la pestaña «Proyección y rentabilidad» un crecimiento de ventas del <b>${pct(projG.g)}</b> anual durante ${projYears} años${full ? ' y el margen neto de los analistas' : ''}. Ese ${pct(projG.g)} sale de las ventas que esperan los analistas hasta ${esc(projG.until)} y, a partir de ahí, de suponer que el crecimiento se frena (${pct(projG.tail)} al año). No se usa el crecimiento de los primeros años para todo el periodo, porque los crecimientos muy altos casi nunca duran. El resto de supuestos (PER, acciones, payout) se quedan como estén.</p>` : ''}
   </div>
   <div class="card">
     <h2>Estimaciones año a año</h2>
@@ -1077,6 +1109,8 @@ function renderEstimates(out, M, R, data, refresh) {
       <tr><td>Beneficio neto</td><td>${B(Y.ni[n - 1])}</td>${C.map(c => `<td>${B(c.ni.avg)}</td>`).join('')}</tr>
       <tr><td>Margen neto</td><td>${pct(R.nm[n - 1])}</td>${C.map(c => `<td>${pct(c.nm)}</td>`).join('')}</tr>` : ''}
       <tr><td>BPA</td><td>${E(lastEps)}</td>${C.map(c => `<td>${E(c.eps.avg)}</td>`).join('')}</tr>
+      ${full ? `<tr><td>BPA calculado ${help('Beneficio neto previsto / número de acciones actual. Sirve para comprobar el BPA del proveedor; si las acciones bajan por recompras, el BPA real será algo mayor.')}</td><td></td>${C.map(c => `<td>${sameUnits ? E(c.epsCalc) : '–'}</td>`).join('')}</tr>` : ''}
+      <tr><td>Nº de analistas (ventas)</td><td></td>${C.map(c => `<td>${isNum(c.revenue.n) ? fmt(c.revenue.n, 0) : '–'}${c.few ? ' <span class="badge down">pocos</span>' : ''}</td>`).join('')}</tr>
       <tr><td>PER con el precio actual ${help('Precio actual / BPA previsto de cada año. Sirve para ver si la acción está cara respecto a lo que se espera que gane.')}</td><td>${mult(L.eps > 0 ? div(M.price, lastEps) : null)}</td>${C.map(c => `<td>${sameUnits && c.eps.avg > 0 ? mult(div(M.price, c.eps.avg)) : '–'}</td>`).join('')}</tr>
       <tr><td>Acuerdo entre analistas</td><td></td>${C.map(c => `<td>${levelBadge(c.agr.score)}</td>`).join('')}</tr>
     </tbody></table></div>
@@ -1131,7 +1165,7 @@ function renderEstimates(out, M, R, data, refresh) {
   $('#euse').addEventListener('click', () => {
     const pk = 'proj:' + d.ticker;
     const cur = store.get(pk) || {};
-    const upd = Object.assign({}, cur, { g: consG });
+    const upd = Object.assign({}, cur, { g: projG.g });
     const nm = avgOf('nm');
     if (full && isNum(nm)) upd.nm = nm;
     store.set(pk, upd);
@@ -1456,7 +1490,7 @@ function guide() {
   <ul><li>Los analistas suelen ser <b>optimistas</b>, sobre todo a 2-3 años vista, y fallan más en empresas cíclicas o en pérdidas.</li>
   <li>Estiman el BPA <b>ajustado</b> (sin partidas extraordinarias), que suele ser algo mayor que el BPA oficial que ves en Estados financieros.</li>
   <li>El proveedor gratuito no da previsiones de flujo de caja libre (FCF). Para el DCF puedes usar el crecimiento de ventas del consenso como referencia.</li></ul>
-  <p><b>Uso práctico:</b> el botón <b>Usar el consenso en la proyección</b> copia el crecimiento de ventas y el margen neto de los analistas en la Parte 1. Luego mira el escenario pesimista: si aun así te da una rentabilidad aceptable, tienes margen de seguridad aunque los analistas se equivoquen.</p></div>
+  <p><b>Uso práctico:</b> el botón <b>Usar el consenso en la proyección</b> copia el margen neto de los analistas en la Parte 1 y un crecimiento de ventas «equivalente»: sigue las ventas que esperan los analistas mientras haya al menos 3 que las estimen y, después, supone que el crecimiento se frena a la mitad (como mucho un 10 % al año). Así, una empresa que hoy crece un 60 % no se proyecta creciendo un 60 % durante 5 años, algo que casi nunca ocurre. Si tú crees que las ventas se estancarán antes, baja ese número: la proyección es tuya. Luego mira el escenario pesimista: si aun así te da una rentabilidad aceptable, tienes margen de seguridad aunque los analistas se equivoquen.</p></div>
 
   <div class="card"><h2>Parte 2. Valor intrínseco (DCF), casilla a casilla</h2>
   <dl class="gloss">
