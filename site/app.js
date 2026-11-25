@@ -1039,10 +1039,15 @@ function renderEstimates(out, M, R, data, refresh) {
   // (la mitad del último año previsto, como mucho un 10 %). Se mide desde los últimos 12 meses, que es donde arranca la proyección.
   const projYears = clamp(Math.round((store.get('proj:' + d.ticker) || {}).years || 5), 1, 30);
   const projG = (() => {
-    const pts = near.filter(c => isNum(c.revenue.avg) && c.revenue.avg > 0);
-    if (!sameUnits || !pts.length || !isNum(L.revenue) || L.revenue <= 0) return null;
+    if (!sameUnits || !isNum(L.revenue) || L.revenue <= 0) return null;
     const t0 = new Date(L.date || lastEnd), yr = x => (new Date(x) - t0) / (365.25 * 864e5);
-    const path = [[0, L.revenue]].concat(pts.map(c => [yr(c.date), c.revenue.avg])).filter(([t]) => t >= 0).sort((a, b) => a[0] - b[0]);
+    // Se descartan los años cuyas ventas no encajan con las anteriores (más de −50 % o +150 % al año): suelen ser errores del proveedor.
+    const path = [[0, L.revenue]], pts = [];
+    near.filter(c => isNum(c.revenue.avg) && c.revenue.avg > 0 && yr(c.date) > 0.05).sort((a, b) => a.date < b.date ? -1 : 1).forEach(c => {
+      const [tp, rp] = path[path.length - 1], t = yr(c.date), gy = Math.pow(c.revenue.avg / rp, 1 / Math.max(t - tp, 0.25)) - 1;
+      if (gy > -0.5 && gy < 1.5) { path.push([t, c.revenue.avg]); pts.push(c); } else c.revOdd = true;
+    });
+    if (!pts.length) return null;
     const [tl, rl] = path[path.length - 1];
     const prev = path.length > 1 ? path[path.length - 2] : null;
     const lastG = prev && tl - prev[0] > 0.3 ? Math.pow(rl / prev[1], 1 / (tl - prev[0])) - 1 : (consG ?? 0);
@@ -1054,11 +1059,26 @@ function renderEstimates(out, M, R, data, refresh) {
       const [ta, ra] = path[i - 1], [tb, rb] = path[i];
       revEnd = ra * Math.pow(rb / ra, (projYears - ta) / (tb - ta));
     }
-    return { g: Math.pow(revEnd / L.revenue, 1 / projYears) - 1, tail, until: pts[pts.length - 1].date.slice(0, 4), revEnd };
+    return { g: Math.pow(revEnd / L.revenue, 1 / projYears) - 1, tail, until: pts[pts.length - 1].date.slice(0, 4), revEnd, pts, tl };
   })();
   const avgOf = k => avg(near.map(c => c[k]));
-  // Margen neto que copia el botón: solo si es creíble (entre −50 % y 80 %); si no, se deja el que tengas.
-  const projNm = (() => { const m = avgOf('nm'); return full && isNum(m) && m > -0.5 && m < 0.8 ? m : null; })();
+  // Margen neto que copia el botón. Se ancla al BPA del consenso (la cifra que citan los analistas): el margen que hace que,
+  // con las acciones de hoy, el BPA proyectado coincida con el BPA previsto del último año fiable. Si no hay BPA creíble,
+  // se usa beneficio neto / ventas. Solo se copia si es creíble (entre −50 % y 80 %); si no, se deja el que tengas.
+  const okNm = m => isNum(m) && m > -0.5 && m < 0.8 ? m : null;
+  const projAnchor = (() => {
+    if (!projG || !isNum(L.shares) || L.shares <= 0) return null;
+    const base = isNum(L.eps) && L.eps > 0 ? L.eps : null;
+    for (const c of [...projG.pts].reverse()) {
+      const e = c.eps.avg;
+      if (!isNum(e) || e <= 0) continue;
+      if (base) { const gy = Math.pow(e / base, 1 / Math.max(c.t, 0.5)) - 1; if (gy < -0.6 || gy > 2) continue; }
+      const m = okNm(e * L.shares / c.revenue.avg);
+      if (m !== null) return { nm: m, c };
+    }
+    return null;
+  })();
+  const projNm = full || projAnchor ? (projAnchor ? projAnchor.nm : okNm(avgOf('nm'))) : null;
   // Comprobación para el usuario: BPA al que llevan esos supuestos, con las acciones de hoy.
   const projEps = projG && isNum(L.shares) && L.shares > 0 ? projG.revEnd * (projNm ?? avg(R.nm.slice(-3)) ?? 0) / L.shares : null;
   const row = k => P.rows.find(r => r.key === k) || {};
@@ -1110,6 +1130,7 @@ function renderEstimates(out, M, R, data, refresh) {
     </div>
     ${sameUnits ? '' : `<div class="note">Las previsiones no parecen estar en la misma moneda o escala que los informes (${esc(ccy)}${d.currency !== 'USD' ? ', mientras que la acción cotiza en dólares' : ''}). Se muestran tal cual, pero no se calculan crecimientos frente al último año publicado.</div>`}
     ${C.some(c => c.few) ? `<div class="note">Los años ${C.filter(c => c.few).map(c => esc(c.date.slice(0, 4))).join(', ')} tienen solo 1 o 2 analistas: es la opinión de muy poca gente y no se usan para los resúmenes ni para el botón de la proyección.</div>` : ''}
+    ${C.some(c => c.revOdd) ? `<div class="note">Las ventas previstas para ${C.filter(c => c.revOdd).map(c => esc(c.date.slice(0, 4))).join(', ')} no encajan con las de los años anteriores (cambio de más del −50 % o +150 % en un año). Parece un error del proveedor y no se usan para el botón de la proyección.</div>` : ''}
     ${niOff.length ? `<div class="note">El beneficio neto que da el proveedor no cuadra con su propio BPA multiplicado por las acciones (${niOff.map(c => esc(c.date.slice(0, 4)) + ': ' + B(c.niBad) + ' frente a ' + B(c.ni.avg)).join('; ')}). El BPA es el que encaja con los márgenes de la empresa, así que en esos años se usa BPA × acciones como beneficio neto (y para el margen neto que copia el botón).</div>` : ''}
     ${epsOff.length ? `<div class="note">El BPA que da el proveedor no cuadra con su propio beneficio neto dividido entre las acciones actuales (${epsOff.map(c => esc(c.date.slice(0, 4)) + ': ' + fmt(c.epsBad) + ' frente a ' + fmt(c.epsCalc)).join('; ')}). Parece un error de sus datos (por ejemplo, sin ajustar un split), así que en esos años se usa el BPA calculado.</div>` : ''}
     ${full ? '' : '<div class="note">Estos datos vienen de Alpha Vantage, que solo da ventas y BPA del ejercicio actual y el siguiente. Con una clave de Financial Modeling Prep verías también EBITDA, EBIT, beneficio neto y más años.</div>'}
@@ -1119,7 +1140,7 @@ function renderEstimates(out, M, R, data, refresh) {
     </tbody></table></div>
     <p class="small muted">Márgenes del consenso: media de los próximos ${near.length} ejercicios. «En línea» = menos de 3 puntos de diferencia (5 en el BPA).</p>
     <p style="display:flex;gap:.5rem;flex-wrap:wrap"><button class="btn ghost" id="euse" ${projG ? '' : 'disabled'}>Usar el consenso en la proyección</button></p>
-    ${projG ? `<p class="small muted">El botón pone en la pestaña «Proyección y rentabilidad» un crecimiento de ventas del <b>${pct(projG.g)}</b> anual durante ${projYears} años${projNm !== null ? ` y un margen neto del <b>${pct(projNm)}</b> (el de los analistas)` : ''}. Ese ${pct(projG.g)} sale de las ventas que esperan los analistas hasta ${esc(projG.until)} y, a partir de ahí, de suponer que el crecimiento se frena (${pct(projG.tail)} al año). No se usa el crecimiento de los primeros años para todo el periodo, porque los crecimientos muy altos casi nunca duran. El resto de supuestos (PER, acciones, payout) se quedan como estén.${isNum(projEps) ? ` Con estos supuestos y el número de acciones de hoy, el BPA dentro de ${projYears} años saldría en torno a <b>${E(projEps)}</b>.` : ''}</p>` : ''}
+    ${projG ? `<p class="small muted">El botón pone en la pestaña «Proyección y rentabilidad» un crecimiento de ventas del <b>${pct(projG.g)}</b> anual durante ${projYears} años${projNm !== null ? ` y un margen neto del <b>${pct(projNm)}</b>${projAnchor ? ` (el que lleva al BPA que esperan los analistas para ${esc(projAnchor.c.date.slice(0, 4))}: ${E(projAnchor.c.eps.avg)})` : ' (el de los analistas)'}` : ''}. Ese ${pct(projG.g)} sale de las ventas que esperan los analistas hasta ${esc(projG.until)} y, a partir de ahí, de suponer que el crecimiento se frena (${pct(projG.tail)} al año). No se usa el crecimiento de los primeros años para todo el periodo, porque los crecimientos muy altos casi nunca duran. El resto de supuestos (PER, acciones, payout) se quedan como estén.${isNum(projEps) ? ` Con estos supuestos y el número de acciones de hoy, el BPA dentro de ${projYears} años saldría en torno a <b>${E(projEps)}</b>.` : ''}</p>` : ''}
   </div>
   <div class="card">
     <h2>Estimaciones año a año</h2>
