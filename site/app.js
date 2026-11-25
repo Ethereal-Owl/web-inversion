@@ -740,6 +740,8 @@ function tabProjection(el, M, R) {
   };
   const s = Object.assign({}, def, store.get(key) || {});
   const P = predictability(M, R);
+  // Margen neto actual de la empresa (12 meses o media de 3 años), para avisar si el supuesto está muy lejos.
+  const refNm = (() => { const a = div(L.ni, L.revenue); return isNum(a) ? a : avg(R.nm.slice(-3)); })();
   const f = (id, label, val, step, tip) => `<label>${label}${tip ? ' ' + help(tip) : ''}<input id="${id}" type="number" step="${step}" value="${isNum(val) ? +val.toFixed(Math.abs(val) >= 1000 ? 0 : 2) : ''}" inputmode="decimal"></label>`;
   el.innerHTML = predictabilityCard(P, true) + `
   <div class="card">
@@ -788,6 +790,7 @@ function tabProjection(el, M, R) {
     const maxBuy = isNum(p.target) && base.priceEnd + base.divs > 0 ? (base.priceEnd + base.divs) / Math.pow(1 + p.target / 100, p.years) : null;
     const lv = levelOf(P.score);
     out.innerHTML = `
+    ${isNum(refNm) && refNm > 0.05 && (p.nm < refNm / 5 || p.nm > Math.max(refNm * 3, 0.8)) ? `<div class="note"><b>Revisa el margen neto:</b> has puesto un ${pct(p.nm)}, pero esta empresa gana hoy un ${pct(refNm)} de lo que vende. Un cambio así es muy raro y suele venir de un dato erróneo (por ejemplo, de una previsión mal copiada). Pulsa «Volver a los valores por defecto» o vuelve a pulsar «Usar el consenso en la proyección» en la pestaña de previsiones.</div>` : ''}
     ${p.g > 0.2 ? `<div class="note"><b>Crecimiento muy alto:</b> un ${pct(p.g)} de crecimiento de ventas cada año durante ${p.years} años multiplica las ventas por ${fmt(Math.pow(1 + p.g, p.years), 1)}. Muy pocas empresas lo consiguen; prueba también con un crecimiento menor.</div>` : ''}
     ${lv === 'baja' ? '<div class="note"><b>Fiabilidad baja</b> (índice ' + fmt(P.score, 0) + '/100): esta empresa ha sido poco predecible y la rentabilidad calculada puede alejarse mucho de la real. Tómala solo como orientación.</div>' : lv === 'media' ? '<div class="note"><b>Fiabilidad media</b> (índice ' + fmt(P.score, 0) + '/100): usa supuestos prudentes y fíjate sobre todo en el escenario pesimista.</div>' : ''}
     <div class="result">
