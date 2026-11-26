@@ -194,7 +194,10 @@ function splitRatio(r) {
   if (!isNum(r) || r <= 0) return null;
   const up = r >= 1 ? r : 1 / r;
   if (up < 1.45) return null;
-  const k = SPLIT_RATIOS.find(x => Math.abs(up / x - 1) < 0.06);
+  // Tolerancia: ±6 %; en splits de 2:1 o más, hasta un 30 % de más, porque el mismo año puede haber emisiones
+  // (p. ej., Tesla 2020: split 5:1 + ampliaciones, las acciones se multiplicaron por 3,65 en los datos de la SEC).
+  const ok = SPLIT_RATIOS.filter(x => up / x > 0.94 && up / x < (x >= 2 ? 1.3 : 1.06));
+  const k = ok.sort((x, y) => Math.abs(Math.log(up / x)) - Math.abs(Math.log(up / y)))[0];
   return k ? (r >= 1 ? k : 1 / k) : null;
 }
 function splitFactors(sh, current) {
