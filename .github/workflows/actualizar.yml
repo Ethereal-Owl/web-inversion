@@ -78,6 +78,14 @@ jobs:
               for t in ins.get("tx", [])[:3]:
                   print("    ", t["d"], t["c"], t["n"], round(t["s"]), "a", t["p"], "->", t["o"])
           print(open("site/data/meta.json").read())
+          # Copia compacta de algunas empresas (gzip + base64) para poder probar la web con datos reales fuera de Actions.
+          import base64, gzip
+          for t in ["NVDA", "AAPL", "TSLA", "GOOGL", "AMZN", "KO", "MSFT"]:
+              p = pathlib.Path("site/data/c") / f"{t}.json"
+              if p.exists():
+                  d = json.loads(p.read_text())
+                  d.pop("holders", None); d.pop("insiders", None)
+                  print("DATOS", t, base64.b64encode(gzip.compress(json.dumps(d, separators=(",", ":")).encode())).decode())
           PY
 
   deploy:
