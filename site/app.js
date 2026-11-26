@@ -186,6 +186,31 @@ async function home() {
 }
 
 // ---------------------------------------------------------------- modelo de empresa
+// Detecta splits en una serie anual de acciones: un salto entre dos años (o entre el último año y las acciones actuales)
+// casi exacto a una proporción típica (2:1, 3:1, 4:1, 10:1, 3:2… o al revés). Devuelve el factor por el que multiplicar
+// las acciones de cada año (y dividir el BPA) para expresarlo todo en acciones de hoy.
+const SPLIT_RATIOS = [1.5, 2, 3, 4, 5, 6, 7, 8, 10, 15, 20, 25, 30, 40, 50, 100];
+function splitRatio(r) {
+  if (!isNum(r) || r <= 0) return null;
+  const up = r >= 1 ? r : 1 / r;
+  if (up < 1.45) return null;
+  const k = SPLIT_RATIOS.find(x => Math.abs(up / x - 1) < 0.06);
+  return k ? (r >= 1 ? k : 1 / k) : null;
+}
+function splitFactors(sh, current) {
+  const n = sh.length, f = new Array(n).fill(1), events = [];
+  let acc = 1, next = null;
+  // De las acciones actuales hacia atrás.
+  const lastIdx = (() => { for (let i = n - 1; i >= 0; i--) if (isNum(sh[i]) && sh[i] > 0) return i; return -1; })();
+  if (lastIdx >= 0 && isNum(current) && current > 0) { const k = splitRatio(current / sh[lastIdx]); if (k && Math.abs(k) >= 2 || (k && k <= 0.5)) { acc = k; events.push({ after: lastIdx, k }); } }
+  for (let i = n - 1; i >= 0; i--) {
+    if (!isNum(sh[i]) || sh[i] <= 0) { f[i] = acc; continue; }
+    if (next !== null) { const k = splitRatio(sh[next] / sh[i]); if (k) { acc *= k; events.push({ after: i, k }); } }
+    f[i] = acc; next = i;
+  }
+  return { f, events };
+}
+
 function buildModel(d) {
   const A = d.annual || {}, n = d.years.length;
   const col = k => (A[k] || new Array(n).fill(null)).map(v => isNum(v) ? v : null);
@@ -214,6 +239,16 @@ function buildModel(d) {
     if (isNum(ltdc) || isNum(std)) return (ltdc || 0) + (std || 0);
     return null;
   };
+  // Splits: la SEC solo reexpresa los 2-3 últimos años tras un split; los anteriores quedan con acciones y BPA antiguos
+  // (p. ej., Nvidia 4:1 en 2021 y 10:1 en 2024). Sin ajustarlos, la «variación de acciones» sale en +900 % un año,
+  // el PER histórico en 3-5 y la proyección no tiene sentido. Los precios (Yahoo) ya vienen ajustados.
+  const splitAdj = splitFactors(Y.shares, d.sharesOutstanding);
+  const soAdj = splitFactors(Y.so, d.sharesOutstanding);
+  Y.splits = splitAdj.events;
+  Y.shares = Y.shares.map((v, i) => isNum(v) ? v * splitAdj.f[i] : v);
+  Y.so = Y.so.map((v, i) => isNum(v) ? v * soAdj.f[i] : v);
+  const perShare = (v, i) => isNum(v) ? v / (isNum(Y.shares[i]) ? splitAdj.f[i] : soAdj.f[i]) : v;
+  Y.eps = Y.eps.map(perShare); Y.dps = Y.dps.map(perShare);
   Y.gp = Y.gp.map((v, i) => isNum(v) ? v : (isNum(Y.revenue[i]) && isNum(Y.cogs[i]) ? Y.revenue[i] - Y.cogs[i] : null));
   Y.debt = Y.ltdn.map((_, i) => debtOf(Y.ltdn[i], Y.ltdt[i], Y.ltdc[i], Y.std[i]));
   Y.cashT = Y.cash.map((v, i) => isNum(v) || isNum(Y.sti[i]) ? (v || 0) + (Y.sti[i] || 0) : null);
@@ -410,6 +445,7 @@ async function company(ticker, tab) {
   const chg1y = (() => { const h = (px && px.history) || []; if (h.length < 13) return null; return h[h.length - 1][1] / h[h.length - 13][1] - 1; })();
   const warn = [];
   if (ccy !== 'USD') warn.push(`Los estados financieros están en <b>${esc(ccy)}</b> y el precio cotiza en dólares. Se convierte con el tipo de cambio actual${M.fx ? ` (1 ${esc(ccy)} = ${fmt(M.fx, 4)} $)` : ''}. Si cotiza como ADR, una acción ADR puede equivaler a varias acciones ordinarias, así que la capitalización y los ratios de precio pueden estar desajustados.`);
+  if (M.Y.splits && M.Y.splits.length) warn.push(`Acciones y BPA de años anteriores ajustados por ${M.Y.splits.length > 1 ? 'los splits' : 'el split'} (${M.Y.splits.map(e => (e.k >= 1 ? fmt(e.k, e.k % 1 ? 1 : 0) + ':1' : '1:' + fmt(1 / e.k, 0)) + ' (' + (M.d.years[e.after + 1] ? 'entre ' + esc(M.d.years[e.after].slice(0, 4)) + ' y ' + esc(M.d.years[e.after + 1].slice(0, 4)) : 'después de ' + esc(M.d.years[e.after].slice(0, 4))) + ')').join(', ')}), para que se puedan comparar con los de hoy.`);
   if (!px) warn.push('No se ha podido obtener la cotización: los ratios de valoración no están disponibles. Puedes escribir el precio a mano en las pestañas de valoración.');
   app.innerHTML = `
   <div class="card">
@@ -832,7 +868,10 @@ function tabProjection(el, M, R) {
     P.rows.forEach(r => {
       const v = r[k], inp = r.input && $('#' + r.input);
       if (!inp || !isNum(v)) return;
-      const x = r.f === pct ? v * 100 : v;
+      // Límites prudentes: una media rara (p. ej., por una gran ampliación de capital) no debe romper la proyección.
+      const lim = { pg: [-0.2, 0.3], pnm: [-0.5, 0.8], psh: [-0.06, 0.06], ppe: [5, 60], ppo: [0, 1] }[r.input];
+      const vv = lim ? clamp(v, lim[0], lim[1]) : v;
+      const x = r.f === pct ? vv * 100 : vv;
       inp.value = +x.toFixed(2);
     });
     run();
